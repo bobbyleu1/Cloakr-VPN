@@ -1,0 +1,1 @@
+{"version":3,"names":["EventEmitter","SharedEventEmitter"],"sourceRoot":"../../../src","sources":["internal/SharedEventEmitter.ts"],"mappings":"AAAA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;AACA;;AAEA,OAAOA,YAAY,MAAM,oDAAoD;AAE7E,OAAO,MAAMC,kBAAgC,GAAG,IAAID,YAAY,CAAC,CAAC","ignoreList":[]}

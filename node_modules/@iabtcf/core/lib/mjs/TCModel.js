@@ -1,0 +1,512 @@
+import { Cloneable } from './Cloneable.js';
+import { TCModelError } from './errors/index.js';
+import { GVL } from './GVL.js';
+import { PurposeRestrictionVector, Vector } from './model/index.js';
+export class TCModel extends Cloneable {
+    /**
+     * Set of available consent languages published by the IAB
+     */
+    static consentLanguages = GVL.consentLanguages;
+    isServiceSpecific_ = false;
+    supportOOB_ = true;
+    useNonStandardStacks_ = false;
+    purposeOneTreatment_ = false;
+    publisherCountryCode_ = 'AA';
+    version_ = 2;
+    consentScreen_ = 0;
+    policyVersion_ = 2;
+    consentLanguage_ = 'EN';
+    cmpId_ = 0;
+    cmpVersion_ = 0;
+    vendorListVersion_ = 0;
+    numCustomPurposes_ = 0;
+    // Member Variable for GVL
+    gvl_;
+    created;
+    lastUpdated;
+    /**
+     * The TCF designates certain Features as special, that is, a CMP must afford
+     * the user a means to opt in to their use. These Special Features are
+     * published and numbered in the GVL separately from normal Features.
+     * Provides for up to 12 special features.
+     */
+    specialFeatureOptins = new Vector();
+    /**
+     * Renamed from `PurposesAllowed` in TCF v1.1
+     * The user’s consent value for each Purpose established on the legal basis
+     * of consent. Purposes are published in the Global Vendor List (see. [[GVL]]).
+     */
+    purposeConsents = new Vector();
+    /**
+     * The user’s permission for each Purpose established on the legal basis of
+     * legitimate interest. If the user has exercised right-to-object for a
+     * purpose.
+     */
+    purposeLegitimateInterests = new Vector();
+    /**
+     * The user’s consent value for each Purpose established on the legal basis
+     * of consent, for the publisher.  Purposes are published in the Global
+     * Vendor List.
+     */
+    publisherConsents = new Vector();
+    /**
+     * The user’s permission for each Purpose established on the legal basis of
+     * legitimate interest.  If the user has exercised right-to-object for a
+     * purpose.
+     */
+    publisherLegitimateInterests = new Vector();
+    /**
+     * The user’s consent value for each Purpose established on the legal basis
+     * of consent, for the publisher.  Purposes are published in the Global
+     * Vendor List.
+     */
+    publisherCustomConsents = new Vector();
+    /**
+     * The user’s permission for each Purpose established on the legal basis of
+     * legitimate interest.  If the user has exercised right-to-object for a
+     * purpose that is established in the publisher's custom purposes.
+     */
+    publisherCustomLegitimateInterests = new Vector();
+    /**
+     * set by a publisher if they wish to collect consent and LI Transparency for
+     * purposes outside of the TCF
+     */
+    customPurposes;
+    /**
+     * Each [[Vendor]] is keyed by id. Their consent value is true if it is in
+     * the Vector
+     */
+    vendorConsents = new Vector();
+    /**
+     * Each [[Vendor]] is keyed by id. Whether their Legitimate Interests
+     * Disclosures have been established is stored as boolean.
+     * see: [[Vector]]
+     */
+    vendorLegitimateInterests = new Vector();
+    /**
+     * The value included for disclosed vendors signals which vendors have been
+     * disclosed to the user in the interface surfaced by the CMP. This section
+     * content is required when writing a TC string to the global (consensu)
+     * scope. When a CMP has read from and is updating a TC string from the
+     * global consensu.org storage, the CMP MUST retain the existing disclosure
+     * information and only add information for vendors that it has disclosed
+     * that had not been disclosed by other CMPs in prior interactions with this
+     * device/user agent.
+     */
+    vendorsDisclosed = new Vector();
+    /**
+     * Signals which vendors the publisher permits to use OOB legal bases.
+     */
+    vendorsAllowed = new Vector();
+    publisherRestrictions = new PurposeRestrictionVector();
+    /**
+     * Constructs the TCModel. Passing a [[GVL]] is optional when constructing
+     * as this TCModel may be constructed from decoding an existing encoded
+     * TCString.
+     *
+     * @param {GVL} [gvl]
+     */
+    constructor(gvl) {
+        super();
+        if (gvl) {
+            this.gvl = gvl;
+        }
+        this.updated();
+    }
+    /**
+     * sets the [[GVL]] with side effects of also setting the `vendorListVersion`, `policyVersion`, and `consentLanguage`
+     * @param {GVL} gvl
+     */
+    set gvl(gvl) {
+        /**
+         * set the reference, but make sure it's our GVL wrapper class.
+         */
+        if (!(GVL.isInstanceOf(gvl))) {
+            gvl = new GVL(gvl);
+        }
+        this.gvl_ = gvl;
+        this.publisherRestrictions.gvl = gvl;
+    }
+    /**
+     * @return {GVL} the gvl instance set on this TCModel instance
+     */
+    get gvl() {
+        return this.gvl_;
+    }
+    /**
+     * @param {number} integer - A unique ID will be assigned to each Consent
+     * Manager Provider (CMP) from the iab.
+     *
+     * @throws {TCModelError} if the value is not an integer greater than 1 as those are not valid.
+     */
+    set cmpId(integer) {
+        integer = Number(integer);
+        if (Number.isInteger(integer) && integer > 1) {
+            this.cmpId_ = integer;
+        }
+        else {
+            throw new TCModelError('cmpId', integer);
+        }
+    }
+    get cmpId() {
+        return this.cmpId_;
+    }
+    /**
+     * Each change to an operating CMP should receive a
+     * new version number, for logging proof of consent. CmpVersion defined by
+     * each CMP.
+     *
+     * @param {number} integer
+     *
+     * @throws {TCModelError} if the value is not an integer greater than 1 as those are not valid.
+     */
+    set cmpVersion(integer) {
+        integer = Number(integer);
+        if (Number.isInteger(integer) && integer > -1) {
+            this.cmpVersion_ = integer;
+        }
+        else {
+            throw new TCModelError('cmpVersion', integer);
+        }
+    }
+    get cmpVersion() {
+        return this.cmpVersion_;
+    }
+    /**
+     * The screen number is CMP and CmpVersion
+     * specific, and is for logging proof of consent.(For example, a CMP could
+     * keep records so that a publisher can request information about the context
+     * in which consent was gathered.)
+     *
+     * @param {number} integer
+     *
+     * @throws {TCModelError} if the value is not an integer greater than 0 as those are not valid.
+     */
+    set consentScreen(integer) {
+        integer = Number(integer);
+        if (Number.isInteger(integer) && integer > -1) {
+            this.consentScreen_ = integer;
+        }
+        else {
+            throw new TCModelError('consentScreen', integer);
+        }
+    }
+    get consentScreen() {
+        return this.consentScreen_;
+    }
+    /**
+     * @param {string} lang - [two-letter ISO 639-1 language
+     * code](http://www.loc.gov/standards/iso639-2/php/code_list.php) in which
+     * the CMP UI was presented
+     *
+     * @throws {TCModelError} if the value is not a length-2 string of alpha characters
+     */
+    set consentLanguage(lang) {
+        this.consentLanguage_ = lang;
+    }
+    get consentLanguage() {
+        return this.consentLanguage_;
+    }
+    /**
+     * @param {string} countryCode - [two-letter ISO 3166-1 alpha-2 country
+     * code](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2) of the publisher,
+     * determined by the CMP-settings of the publisher.
+     *
+     * @throws {TCModelError} if the value is not a length-2 string of alpha characters
+     */
+    set publisherCountryCode(countryCode) {
+        if (/^([A-z]){2}$/.test(countryCode)) {
+            this.publisherCountryCode_ = countryCode.toUpperCase();
+        }
+        else {
+            throw new TCModelError('publisherCountryCode', countryCode);
+        }
+    }
+    get publisherCountryCode() {
+        return this.publisherCountryCode_;
+    }
+    /**
+     * Version of the GVL used to create this TCModel. Global
+     * Vendor List versions will be released periodically.
+     *
+     * @param {number} integer
+     *
+     * @throws {TCModelError} if the value is not an integer greater than 0 as those are not valid.
+     */
+    set vendorListVersion(integer) {
+        /**
+         * first coerce to a number via leading '+' then take the integer value by
+         * bitshifting to the right.  This works on all types in JavaScript and if
+         * it's not valid then value will be 0.
+         */
+        integer = Number(integer) >> 0;
+        if (integer < 0) {
+            throw new TCModelError('vendorListVersion', integer);
+        }
+        else {
+            this.vendorListVersion_ = integer;
+        }
+    }
+    get vendorListVersion() {
+        if (this.gvl) {
+            return this.gvl.vendorListVersion;
+        }
+        else {
+            return this.vendorListVersion_;
+        }
+    }
+    /**
+     * From the corresponding field in the GVL that was
+     * used for obtaining consent. A new policy version invalidates existing
+     * strings and requires CMPs to re-establish transparency and consent from
+     * users.
+     *
+     * If a TCF policy version number is different from the one from the latest
+     * GVL, the CMP must re-establish transparency and consent.
+     *
+     * @param {number} num - You do not need to set this.  This comes
+     * directly from the [[GVL]].
+     *
+     */
+    set policyVersion(num) {
+        this.policyVersion_ = parseInt(num, 10);
+        if (this.policyVersion_ < 0) {
+            throw new TCModelError('policyVersion', num);
+        }
+    }
+    get policyVersion() {
+        if (this.gvl) {
+            return this.gvl.tcfPolicyVersion;
+        }
+        else {
+            return this.policyVersion_;
+        }
+    }
+    set version(num) {
+        this.version_ = parseInt(num, 10);
+    }
+    get version() {
+        return this.version_;
+    }
+    /**
+     * Whether the signals encoded in this TC String were from site-specific
+     * storage `true` versus ‘global’ consensu.org shared storage `false`. A
+     * string intended to be stored in global/shared scope but the CMP is unable
+     * to store due to a user agent not accepting third-party cookies would be
+     * considered site-specific `true`.
+     *
+     * @param {boolean} bool - value to set. Some changes to other fields in this
+     * model will automatically change this value like adding publisher
+     * restrictions.
+     */
+    set isServiceSpecific(bool) {
+        this.isServiceSpecific_ = bool;
+    }
+    get isServiceSpecific() {
+        return this.isServiceSpecific_;
+    }
+    /**
+     * Non-standard stacks means that a CMP is using publisher-customized stack
+     * descriptions. Stacks (in terms of purposes in a stack) are pre-set by the
+     * IAB. As are titles. Descriptions are pre-set, but publishers can customize
+     * them. If they do, they need to set this bit to indicate that they've
+     * customized descriptions.
+     *
+     * @param {boolean} bool - value to set
+     */
+    set useNonStandardStacks(bool) {
+        this.useNonStandardStacks_ = bool;
+    }
+    get useNonStandardStacks() {
+        return this.useNonStandardStacks_;
+    }
+    /**
+     * Whether or not this publisher supports OOB signaling.  On Global TC String
+     * OOB Vendors Disclosed will be included if the publish wishes to no allow
+     * these vendors they should set this to false.
+     * @param {boolean} bool - value to set
+     */
+    set supportOOB(bool) {
+        this.supportOOB_ = bool;
+    }
+    get supportOOB() {
+        return this.supportOOB_;
+    }
+    /**
+     * `false` There is no special Purpose 1 status.
+     * Purpose 1 was disclosed normally (consent) as expected by Policy.  `true`
+     * Purpose 1 not disclosed at all. CMPs use PublisherCC to indicate the
+     * publisher’s country of establishment to help Vendors determine whether the
+     * vendor requires Purpose 1 consent. In global scope TC strings, this field
+     * must always have a value of `false`. When a CMP encounters a global scope
+     * string with `purposeOneTreatment=true` then that string should be
+     * considered invalid and the CMP must re-establish transparency and consent.
+     *
+     * @param {boolean} bool
+     */
+    set purposeOneTreatment(bool) {
+        this.purposeOneTreatment_ = bool;
+    }
+    get purposeOneTreatment() {
+        return this.purposeOneTreatment_;
+    }
+    /**
+     * setAllVendorConsents - sets all vendors on the GVL Consent (true)
+     *
+     * @return {void}
+     */
+    setAllVendorConsents() {
+        this.vendorConsents.set(this.gvl.vendors);
+    }
+    /**
+     * unsetAllVendorConsents - unsets all vendors on the GVL Consent (false)
+     *
+     * @return {void}
+     */
+    unsetAllVendorConsents() {
+        this.vendorConsents.empty();
+    }
+    /**
+     * setAllVendorsDisclosed - sets all vendors on the GVL Vendors Disclosed (true)
+     *
+     * @return {void}
+     */
+    setAllVendorsDisclosed() {
+        this.vendorsDisclosed.set(this.gvl.vendors);
+    }
+    /**
+     * unsetAllVendorsDisclosed - unsets all vendors on the GVL Consent (false)
+     *
+     * @return {void}
+     */
+    unsetAllVendorsDisclosed() {
+        this.vendorsDisclosed.empty();
+    }
+    /**
+     * setAllVendorsAllowed - sets all vendors on the GVL Consent (true)
+     *
+     * @return {void}
+     */
+    setAllVendorsAllowed() {
+        this.vendorsAllowed.set(this.gvl.vendors);
+    }
+    /**
+     * unsetAllVendorsAllowed - unsets all vendors on the GVL Consent (false)
+     *
+     * @return {void}
+     */
+    unsetAllVendorsAllowed() {
+        this.vendorsAllowed.empty();
+    }
+    /**
+     * setAllVendorLegitimateInterests - sets all vendors on the GVL LegitimateInterests (true)
+     *
+     * @return {void}
+     */
+    setAllVendorLegitimateInterests() {
+        this.vendorLegitimateInterests.set(this.gvl.vendors);
+    }
+    /**
+     * unsetAllVendorLegitimateInterests - unsets all vendors on the GVL LegitimateInterests (false)
+     *
+     * @return {void}
+     */
+    unsetAllVendorLegitimateInterests() {
+        this.vendorLegitimateInterests.empty();
+    }
+    /**
+     * setAllPurposeConsents - sets all purposes on the GVL Consent (true)
+     *
+     * @return {void}
+     */
+    setAllPurposeConsents() {
+        this.purposeConsents.set(this.gvl.purposes);
+    }
+    /**
+     * unsetAllPurposeConsents - unsets all purposes on the GVL Consent (false)
+     *
+     * @return {void}
+     */
+    unsetAllPurposeConsents() {
+        this.purposeConsents.empty();
+    }
+    /**
+     * setAllPurposeLegitimateInterests - sets all purposes on the GVL LI Transparency (true)
+     *
+     * @return {void}
+     */
+    setAllPurposeLegitimateInterests() {
+        this.purposeLegitimateInterests.set(this.gvl.purposes);
+    }
+    /**
+     * unsetAllPurposeLegitimateInterests - unsets all purposes on the GVL LI Transparency (false)
+     *
+     * @return {void}
+     */
+    unsetAllPurposeLegitimateInterests() {
+        this.purposeLegitimateInterests.empty();
+    }
+    /**
+     * setAllSpecialFeatureOptins - sets all special featuresOptins on the GVL (true)
+     *
+     * @return {void}
+     */
+    setAllSpecialFeatureOptins() {
+        this.specialFeatureOptins.set(this.gvl.specialFeatures);
+    }
+    /**
+     * unsetAllSpecialFeatureOptins - unsets all special featuresOptins on the GVL (true)
+     *
+     * @return {void}
+     */
+    unsetAllSpecialFeatureOptins() {
+        this.specialFeatureOptins.empty();
+    }
+    setAll() {
+        this.setAllVendorConsents();
+        this.setAllPurposeLegitimateInterests();
+        this.setAllSpecialFeatureOptins();
+        this.setAllPurposeConsents();
+        this.setAllVendorLegitimateInterests();
+    }
+    unsetAll() {
+        this.unsetAllVendorConsents();
+        this.unsetAllPurposeLegitimateInterests();
+        this.unsetAllSpecialFeatureOptins();
+        this.unsetAllPurposeConsents();
+        this.unsetAllVendorLegitimateInterests();
+    }
+    get numCustomPurposes() {
+        let len = this.numCustomPurposes_;
+        if (typeof this.customPurposes === 'object') {
+            /**
+             * Keys are not guaranteed to be in order and likewise there is no
+             * requirement that the customPurposes be non-sparse.  So we have to sort
+             * and take the highest value.  Even if the set only contains 3 purposes
+             * but goes to ID 6 we need to set the number to 6 for the encoding to
+             * work properly since it's positional.
+             */
+            const purposeIds = Object.keys(this.customPurposes)
+                .sort((a, b) => Number(a) - Number(b));
+            len = parseInt(purposeIds.pop(), 10);
+        }
+        return len;
+    }
+    set numCustomPurposes(num) {
+        this.numCustomPurposes_ = parseInt(num, 10);
+        if (this.numCustomPurposes_ < 0) {
+            throw new TCModelError('numCustomPurposes', num);
+        }
+    }
+    /**
+     * updated - updates the created and lastUpdated dates with a 'now' day-level UTC timestamp
+     *
+     * @return {void}
+     */
+    updated() {
+        const date = new Date();
+        const utcDate = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+        this.created = utcDate;
+        this.lastUpdated = utcDate;
+    }
+}

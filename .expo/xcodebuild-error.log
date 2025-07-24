@@ -1,0 +1,8 @@
+** BUILD FAILED **
+
+
+The following build commands failed:
+	SwiftEmitModule normal arm64 Emitting\ module\ for\ cloakr (in target 'cloakr' from project 'cloakr')
+	EmitSwiftModule normal arm64 (in target 'cloakr' from project 'cloakr')
+	Building workspace cloakr with scheme cloakr and configuration Debug
+(3 failures)

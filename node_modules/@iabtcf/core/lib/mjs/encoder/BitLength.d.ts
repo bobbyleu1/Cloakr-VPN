@@ -1,0 +1,32 @@
+import { Fields } from '../model/index.js';
+export declare class BitLength {
+    static readonly [Fields.cmpId]: number;
+    static readonly [Fields.cmpVersion]: number;
+    static readonly [Fields.consentLanguage]: number;
+    static readonly [Fields.consentScreen]: number;
+    static readonly [Fields.created]: number;
+    static readonly [Fields.isServiceSpecific]: number;
+    static readonly [Fields.lastUpdated]: number;
+    static readonly [Fields.policyVersion]: number;
+    static readonly [Fields.publisherCountryCode]: number;
+    static readonly [Fields.publisherLegitimateInterests]: number;
+    static readonly [Fields.publisherConsents]: number;
+    static readonly [Fields.purposeConsents]: number;
+    static readonly [Fields.purposeLegitimateInterests]: number;
+    static readonly [Fields.purposeOneTreatment]: number;
+    static readonly [Fields.specialFeatureOptins]: number;
+    static readonly [Fields.useNonStandardStacks]: number;
+    static readonly [Fields.vendorListVersion]: number;
+    static readonly [Fields.version]: number;
+    static readonly anyBoolean: number;
+    static readonly encodingType: number;
+    static readonly maxId: number;
+    static readonly numCustomPurposes: number;
+    static readonly numEntries: number;
+    static readonly numRestrictions: number;
+    static readonly purposeId: number;
+    static readonly restrictionType: number;
+    static readonly segmentType: number;
+    static readonly singleOrRange: number;
+    static readonly vendorId: number;
+}

@@ -1,0 +1,1 @@
+{"version":3,"file":"PaidEventListener.d.ts","sourceRoot":"","sources":["../../../src/types/PaidEventListener.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,iBAAiB,EAAE,MAAM,qBAAqB,CAAC;AAExD,MAAM,MAAM,SAAS,GAAG;IACtB,QAAQ,EAAE,MAAM,CAAC;IACjB,SAAS,EAAE,iBAAiB,CAAC;IAC7B,KAAK,EAAE,MAAM,CAAC;CACf,CAAC;AAEF,MAAM,MAAM,iBAAiB,GAAG,CAAC,KAAK,EAAE,SAAS,KAAK,IAAI,CAAC"}

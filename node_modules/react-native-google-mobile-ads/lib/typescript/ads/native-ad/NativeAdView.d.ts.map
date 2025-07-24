@@ -1,0 +1,1 @@
+{"version":3,"file":"NativeAdView.d.ts","sourceRoot":"","sources":["../../../../src/ads/native-ad/NativeAdView.tsx"],"names":[],"mappings":"AAiBA,OAAO,KAAiB,MAAM,OAAO,CAAC;AACtC,OAAO,EAAE,SAAS,EAAE,MAAM,cAAc,CAAC;AACzC,OAAO,EAAE,QAAQ,EAAE,MAAM,YAAY,CAAC;AAItC,MAAM,MAAM,iBAAiB,GAAG,SAAS,GAAG;IAC1C,QAAQ,EAAE,QAAQ,CAAC;CACpB,CAAC;AAEF,eAAO,MAAM,YAAY,UAAW,iBAAiB,sBAepD,CAAC"}

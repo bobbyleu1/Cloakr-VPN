@@ -1,0 +1,32 @@
+import { Fields } from '../model/index.js';
+export class BitLength {
+    static [Fields.cmpId] = 12;
+    static [Fields.cmpVersion] = 12;
+    static [Fields.consentLanguage] = 12;
+    static [Fields.consentScreen] = 6;
+    static [Fields.created] = 36;
+    static [Fields.isServiceSpecific] = 1;
+    static [Fields.lastUpdated] = 36;
+    static [Fields.policyVersion] = 6;
+    static [Fields.publisherCountryCode] = 12;
+    static [Fields.publisherLegitimateInterests] = 24;
+    static [Fields.publisherConsents] = 24;
+    static [Fields.purposeConsents] = 24;
+    static [Fields.purposeLegitimateInterests] = 24;
+    static [Fields.purposeOneTreatment] = 1;
+    static [Fields.specialFeatureOptins] = 12;
+    static [Fields.useNonStandardStacks] = 1;
+    static [Fields.vendorListVersion] = 12;
+    static [Fields.version] = 6;
+    static anyBoolean = 1;
+    static encodingType = 1;
+    static maxId = 16;
+    static numCustomPurposes = 6;
+    static numEntries = 12;
+    static numRestrictions = 12;
+    static purposeId = 6;
+    static restrictionType = 2;
+    static segmentType = 3;
+    static singleOrRange = 1;
+    static vendorId = 16;
+}

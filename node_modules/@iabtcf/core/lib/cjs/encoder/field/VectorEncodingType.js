@@ -1,0 +1,1 @@
+"use strict";var VectorEncodingType;Object.defineProperty(exports,"__esModule",{value:!0}),exports.VectorEncodingType=void 0,function(e){e[e.FIELD=0]="FIELD",e[e.RANGE=1]="RANGE"}(VectorEncodingType=exports.VectorEncodingType||(exports.VectorEncodingType={}));

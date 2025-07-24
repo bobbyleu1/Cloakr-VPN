@@ -1,0 +1,1 @@
+"use strict";Object.defineProperty(exports,"__esModule",{value:!0}),exports.BooleanEncoder=void 0;var BooleanEncoder=function(){function e(){}return e.encode=function(e){return String(Number(e))},e.decode=function(e){return"1"===e},e}();exports.BooleanEncoder=BooleanEncoder;

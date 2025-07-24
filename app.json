@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "cloakr",
+    "slug": "cloakr",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/appicon.png",
+    "scheme": "cloakr",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vroomstudios.cloakr"
+    },
+    "android": {
+      "package": "com.vroomstudios.cloakr",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/appicon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-6842873031676463~6993451975",
+          "iosAppId": "ca-app-pub-6842873031676463~1595669539"
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/spalsh.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

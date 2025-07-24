@@ -1,0 +1,1 @@
+"use strict";var RestrictionType;Object.defineProperty(exports,"__esModule",{value:!0}),exports.RestrictionType=void 0,function(e){e[e.NOT_ALLOWED=0]="NOT_ALLOWED",e[e.REQUIRE_CONSENT=1]="REQUIRE_CONSENT",e[e.REQUIRE_LI=2]="REQUIRE_LI"}(RestrictionType=exports.RestrictionType||(exports.RestrictionType={}));

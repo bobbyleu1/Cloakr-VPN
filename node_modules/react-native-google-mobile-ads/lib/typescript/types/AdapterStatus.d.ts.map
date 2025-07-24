@@ -1,0 +1,1 @@
+{"version":3,"file":"AdapterStatus.d.ts","sourceRoot":"","sources":["../../../src/types/AdapterStatus.ts"],"names":[],"mappings":"AAAA,oBAAY,mBAAmB;IAC7B;;OAEG;IACH,kCAAkC,IAAI;IAEtC;;OAEG;IACH,+BAA+B,IAAI;CACpC;AAED;;GAEG;AACH,MAAM,MAAM,aAAa,GAAG;IAC1B,IAAI,EAAE,MAAM,CAAC;IACb,WAAW,EAAE,MAAM,CAAC;IACpB,KAAK,EAAE,mBAAmB,CAAC;CAC5B,CAAC"}
