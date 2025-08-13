@@ -1,0 +1,46 @@
+# macOS
+.DS_Store
+
+# Node / JS
+node_modules/
+npm-debug.log*
+yarn-error.log
+.pnpm-store/
+.eslintcache
+.cache/
+
+# Env
+.env
+.env.*
+backend/.env
+
+# Expo / RN / Metro
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# iOS
+ios/Pods/
+ios/build/
+ios/DerivedData/
+**/*.xcuserstate
+**/*.xcuserdatad
+
+# Android
+android/.gradle/
+android/.idea/
+android/local.properties
+android/build/
+android/app/build/
+
+# Outputs / archives
+*.ipa
+*.app.dSYM.zip
+*.dSYM
+
+# Backend
+backend/node_modules/
+
+# Logs
+*.log
