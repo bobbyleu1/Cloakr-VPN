@@ -239,7 +239,7 @@ async function validateReceiptWithBackend(
   const base = process.env.EXPO_PUBLIC_BACKEND_URL;
   console.log(LOG, 'Backend URL:', base);
   if (!base) throw new Error('SERVER_ERROR');
-  const url = `${base.replace(/\/+$/, '')}/api/verifyReceipt`;
+  const url = `${base.replace(/\/+$/, '')}/verify-receipt`;
   if (!__DEV__ && !url.startsWith('https://')) {
     console.error(LOG, 'Backend must use HTTPS for production');
     throw new Error('SERVER_ERROR');
@@ -250,11 +250,23 @@ async function validateReceiptWithBackend(
     const to = setTimeout(() => controller.abort(), 10_000);
     try {
       console.log(LOG, 'Posting to backend:', url);
+      const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      
+      // Add Supabase auth header if available
+      if (supabaseAnonKey) {
+        headers['Authorization'] = `Bearer ${supabaseAnonKey}`;
+      }
+      
       const res = await fetch(url, {
         method: 'POST',
         signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ receiptData }),
+        headers,
+        body: JSON.stringify({ 
+          receiptBase64: receiptData,
+          bundleId: "com.vroomstudios.cloakr",
+          productIds: ["cloakr.monthly.unlimited6"]
+        }),
       });
       
       console.log(LOG, 'Backend response status:', res.status);

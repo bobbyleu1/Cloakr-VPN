@@ -25,17 +25,18 @@ import mobileAds, {
   RewardedAdEventType,
 } from 'react-native-google-mobile-ads';
 import { PremiumConfigProvider, usePremiumConfig } from '../src/context/PremiumConfigContext';
-import { PremiumProvider, usePremium } from '../src/context/PremiumContext';
-import { PaywallScreen } from '../src/paywall/PaywallScreen';
+import { EntitlementsProvider, useEntitlements } from '../src/iap/EntitlementsContext';
+import { PaywallV2 } from '../src/paywall/PaywallV2';
 import SessionManager from '../src/services/SessionManager';
 import { BANNER_ID, PremiumBannerAd, REWARDED_AD_ID, PremiumRewardedAd as RewardedAdInstance, setAdsEnabled } from '../src/utils/Ads';
+import { logger } from '../src/utils/logger';
 
 const { VPNManager } = NativeModules;
 const vpnEvents = new NativeEventEmitter(VPNManager);
 
 function HomeScreenContent() {
   const { config } = usePremiumConfig();
-  const { isPremium, restoreEntitlement } = usePremium();
+  const { isPremium, restore } = useEntitlements();
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [vpnTimeLeft, setVpnTimeLeft] = useState(0); // in seconds
@@ -49,11 +50,20 @@ function HomeScreenContent() {
   useEffect(() => {
     (async () => {
       try {
+        // Enable visible logging for physical device debugging
+        logger.enableVisibleLogging();
+        logger.app.info('Initializing app...');
+        
         await SplashScreen.preventAutoHideAsync();
+        logger.ads.info('Initializing mobile ads...');
         await mobileAds().initialize();
-        setTimeout(SplashScreen.hideAsync, 500);
+        setTimeout(() => {
+          SplashScreen.hideAsync();
+          logger.app.info('Splash screen hidden');
+        }, 500);
+        logger.app.info('App initialization completed');
       } catch (e) {
-        console.warn('Splash error:', e);
+        logger.app.error('Splash initialization error', undefined, e as Error);
       }
     })();
   }, []);
@@ -61,7 +71,10 @@ function HomeScreenContent() {
   // Create fresh ad instance when adsWatched changes
   useEffect(() => {
     if (!isPremium && adsWatched < 6) {
-      console.log('Creating fresh ad instance for ad #', adsWatched + 1, 'VPN connected:', isConnected);
+      logger.ads.info('Creating fresh ad instance', { 
+        adNumber: adsWatched + 1, 
+        vpnConnected: isConnected 
+      });
       
       const rewardedAd = new RewardedAdInstance(REWARDED_AD_ID, {
         requestNonPersonalizedAdsOnly: true,
@@ -70,22 +83,32 @@ function HomeScreenContent() {
       setRewardedLoaded(false);
 
       const unsubLoaded = rewardedAd.addAdEventListener(RewardedAdEventType.LOADED, () => {
-        console.log('Ad loaded for ad #', adsWatched + 1, 'VPN connected:', isConnected);
+        logger.ads.info('Ad loaded successfully', { 
+          adNumber: adsWatched + 1, 
+          vpnConnected: isConnected 
+        });
         setRewardedLoaded(true);
       });
 
       const unsubFailed = rewardedAd.addAdEventListener(AdEventType.ERROR, (error: any) => {
-        console.warn('Ad failed to load for ad #', adsWatched + 1, 'Error:', error, 'VPN connected:', isConnected);
+        logger.ads.error('Ad failed to load', { 
+          adNumber: adsWatched + 1, 
+          vpnConnected: isConnected,
+          error 
+        });
         setRewardedLoaded(false);
         // Retry after delay
         setTimeout(() => {
-          console.log('Retrying ad load...');
+          logger.ads.info('Retrying ad load...');
           rewardedAd.load();
         }, 3000);
       });
 
       const unsubEarned = rewardedAd.addAdEventListener(RewardedAdEventType.EARNED_REWARD, async () => {
-        console.log('Ad reward earned for ad #', adsWatched + 1, 'VPN connected:', isConnected);
+        logger.ads.info('Ad reward earned', { 
+          adNumber: adsWatched + 1, 
+          vpnConnected: isConnected 
+        });
         
         // Add 2 hours (7200 seconds) - handle both connected and disconnected states
         try {
@@ -93,7 +116,7 @@ function HomeScreenContent() {
           if (currentSession.isActive && isConnected) {
             // VPN is connected - extend the active session
             await SessionManager.extendSession(7200, 43200);
-            console.log('Extended active VPN session by 2 hours');
+            logger.ads.info('Extended active VPN session by 2 hours');
             // Also update local state to reflect the change immediately
             const updatedSession = await SessionManager.getCurrentSession();
             setVpnTimeLeft(updatedSession.remainingTime);
@@ -101,10 +124,10 @@ function HomeScreenContent() {
             // VPN not connected - just add time to local state
             const newTimeLeft = Math.min(vpnTimeLeft + 7200, 43200);
             setVpnTimeLeft(newTimeLeft);
-            console.log('Added 2 hours to local time:', newTimeLeft);
+            logger.ads.info('Added 2 hours to local time', { newTimeLeft });
           }
         } catch (error) {
-          console.warn('Failed to extend session, using fallback:', error);
+          logger.ads.error('Failed to extend session, using fallback', undefined, error as Error);
           const newTimeLeft = Math.min(vpnTimeLeft + 7200, 43200);
           setVpnTimeLeft(newTimeLeft);
         }
@@ -114,11 +137,14 @@ function HomeScreenContent() {
       });
 
       // Load the ad - this should work regardless of VPN state
-      console.log('Loading ad for ad #', adsWatched + 1, 'VPN connected:', isConnected);
+      logger.ads.info('Loading ad', { 
+        adNumber: adsWatched + 1, 
+        vpnConnected: isConnected 
+      });
       rewardedAd.load();
       
       return () => {
-        console.log('Cleaning up ad instance for ad #', adsWatched + 1);
+        logger.ads.debug('Cleaning up ad instance', { adNumber: adsWatched + 1 });
         unsubLoaded();
         unsubFailed();
         unsubEarned();
@@ -128,6 +154,7 @@ function HomeScreenContent() {
 
 
   useEffect(() => {
+    logger.config.info('Updating ads enabled status', { enabled: config.ads.enabled });
     setAdsEnabled(config.ads.enabled);
   }, [config.ads.enabled]);
 
@@ -135,13 +162,18 @@ function HomeScreenContent() {
   // Initialize SessionManager
   useEffect(() => {
     const initializeSessionManager = async () => {
+      logger.session.info('Setting up SessionManager callbacks...');
       SessionManager.setOnSessionExpired(() => {
+        logger.session.warn('Session expired callback triggered');
         setIsConnected(false);
         setVpnTimeLeft(0);
         Alert.alert('Session Expired', 'Your VPN session has expired and the connection was automatically terminated.');
       });
 
       SessionManager.setOnSessionUpdated((sessionData) => {
+        logger.session.debug('Session updated callback triggered', { 
+          remainingTime: sessionData.remainingTime 
+        });
         setVpnTimeLeft(sessionData.remainingTime);
       });
 
@@ -149,6 +181,9 @@ function HomeScreenContent() {
       
       const currentSession = await SessionManager.getCurrentSession();
       if (currentSession.isActive && currentSession.remainingTime > 0) {
+        logger.session.info('Restored active session on app start', {
+          remainingTime: currentSession.remainingTime
+        });
         setVpnTimeLeft(currentSession.remainingTime);
       }
     };
@@ -164,54 +199,69 @@ function HomeScreenContent() {
     const isActuallyConnected = status === 'connected' || status === 'connecting';
     setIsConnected(isActuallyConnected);
     setIsConnecting(status === 'connecting');
-    console.log('Applied VPN status:', status, 'isConnected:', isActuallyConnected);
+    logger.vpn.info('Applied VPN status', { 
+      status, 
+      isConnected: isActuallyConnected,
+      isConnecting: status === 'connecting'
+    });
   };
 
   useEffect(() => {
     const loadAppState = async () => {
       try {
+        logger.storage.info('Loading app state from storage...');
         const savedAdsWatched = await AsyncStorage.getItem('ads_watched');
         if (savedAdsWatched) {
-          setAdsWatched(parseInt(savedAdsWatched, 10));
+          const adsCount = parseInt(savedAdsWatched, 10);
+          setAdsWatched(adsCount);
+          logger.storage.info('Loaded saved ads watched count', { count: adsCount });
         }
         
         const savedVpnTime = await AsyncStorage.getItem('vpn_time_left');
         if (savedVpnTime) {
           const timeLeft = parseInt(savedVpnTime, 10);
           setVpnTimeLeft(timeLeft);
-          console.log('Loaded saved VPN time:', timeLeft);
+          logger.storage.info('Loaded saved VPN time', { timeLeft });
         }
         
+        logger.vpn.debug('Getting cached VPN status...');
         const cached = await VPNManager.getCachedStatus();
         applyStatus(cached);
         
+        logger.vpn.debug('Refreshing VPN status...');
         const real = await VPNManager.refreshStatus();
         applyStatus(real);
+        
+        logger.app.info('App state loaded successfully');
       } catch (e) {
-        console.warn('Failed to load app state:', e);
+        logger.app.error('Failed to load app state', undefined, e as Error);
       }
     };
     
     loadAppState();
     
     const subscription = vpnEvents.addListener('vpnStatus', (event) => {
+      logger.vpn.info('VPN status event received', { status: event.status });
       applyStatus(event.status);
     });
     
     return () => {
+      logger.vpn.debug('Removing VPN status listener');
       subscription.remove();
     };
   }, []);
 
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: string) => {
+      logger.app.info('App state change detected', { nextAppState });
       if (nextAppState === 'active') {
         setTimeout(async () => {
           try {
+            logger.vpn.debug('Refreshing VPN status on app active');
             const status = await VPNManager.refreshStatus();
             applyStatus(status);
           } catch (e) {
-            console.warn('Failed to refresh status on app active:', e);
+            logger.vpn.error('Failed to refresh status on app active', undefined, e as Error);
           }
         }, 300);
       }
@@ -222,10 +272,11 @@ function HomeScreenContent() {
     const interval = setInterval(async () => {
       if (AppState.currentState === 'active') {
         try {
+          logger.vpn.debug('Periodic VPN status refresh');
           const status = await VPNManager.refreshStatus();
           applyStatus(status);
         } catch (e) {
-          console.warn('Failed periodic status refresh:', e);
+          logger.vpn.error('Failed periodic status refresh', undefined, e as Error);
         }
       }
     }, 30000);
@@ -240,8 +291,9 @@ function HomeScreenContent() {
     const saveVpnTime = async () => {
       try {
         await AsyncStorage.setItem('vpn_time_left', vpnTimeLeft.toString());
+        logger.storage.debug('Saved VPN time to storage', { timeLeft: vpnTimeLeft });
       } catch (e) {
-        console.warn('Failed to save VPN time:', e);
+        logger.storage.error('Failed to save VPN time', undefined, e as Error);
       }
     };
     saveVpnTime();
@@ -251,17 +303,27 @@ function HomeScreenContent() {
     const saveAdsWatched = async () => {
       try {
         await AsyncStorage.setItem('ads_watched', adsWatched.toString());
+        logger.storage.debug('Saved ads watched count to storage', { count: adsWatched });
       } catch (e) {
-        console.warn('Failed to save ads watched count:', e);
+        logger.storage.error('Failed to save ads watched count', undefined, e as Error);
       }
     };
     saveAdsWatched();
   }, [adsWatched]);
 
   const showRewardedAd = () => {
+    logger.ads.info('Show rewarded ad requested', { 
+      rewardedExists: !!rewarded, 
+      rewardedLoaded 
+    });
     if (rewarded && rewardedLoaded) {
+      logger.ads.info('Showing rewarded ad');
       rewarded.show();
     } else {
+      logger.ads.warn('Ad not ready for display', { 
+        rewardedExists: !!rewarded, 
+        rewardedLoaded 
+      });
       Alert.alert('Ad Not Ready', 'Please wait for the ad to load and try again.');
     }
   };
@@ -274,9 +336,19 @@ function HomeScreenContent() {
   };
 
   const connectToVPN = async () => {
-    if (isConnecting) return;
+    if (isConnecting) {
+      logger.vpn.debug('Connect request ignored - already connecting');
+      return;
+    }
+    
+    logger.vpn.info('VPN connect requested', {
+      isPremium,
+      premiumModeEnabled: config.ios.featureFlags.premiumModeEnabled,
+      vpnTimeLeft
+    });
     
     if (!isPremium && config.ios.featureFlags.premiumModeEnabled && vpnTimeLeft <= 0) {
+      logger.vpn.warn('VPN connect blocked - no time remaining');
       Alert.alert('No VPN Time', 'You need to watch an ad to get VPN time!', [
         { text: 'Watch Ad', onPress: showRewardedAd },
         { text: 'Cancel', style: 'cancel' }
@@ -286,7 +358,7 @@ function HomeScreenContent() {
 
     setIsConnecting(true);
     try {
-      console.log('Attempting to connect VPN...');
+      logger.vpn.info('Attempting to connect VPN...');
       VPNManager?.connect?.();
       
       setTimeout(async () => {
@@ -297,34 +369,39 @@ function HomeScreenContent() {
           if (status === 'connected' && !isPremium && config.ios.featureFlags.premiumModeEnabled && vpnTimeLeft > 0) {
             try {
               await SessionManager.startSession(vpnTimeLeft);
-              console.log('VPN connected - Started session timer');
+              logger.vpn.info('VPN connected - Started session timer');
             } catch (error) {
-              console.warn('Failed to start session timer:', error);
+              logger.vpn.error('Failed to start session timer', undefined, error as Error);
             }
           }
         } catch (e) {
-          console.warn('Failed to refresh status after connect:', e);
+          logger.vpn.error('Failed to refresh status after connect', undefined, e as Error);
           setIsConnecting(false);
         }
       }, 3000);
     } catch (e) {
-      console.error('Connect error:', e);
+      logger.vpn.error('VPN connect error', undefined, e as Error);
       setIsConnecting(false);
     }
   };
 
   const disconnectFromVPN = async () => {
-    if (isConnecting) return;
+    if (isConnecting) {
+      logger.vpn.debug('Disconnect request ignored - already connecting/disconnecting');
+      return;
+    }
+    
+    logger.vpn.info('VPN disconnect requested');
     setIsConnecting(true);
     try {
-      console.log('Attempting to disconnect VPN...');
+      logger.vpn.info('Attempting to disconnect VPN...');
       VPNManager?.disconnect?.();
       
       try {
         await SessionManager.endSession();
-        console.log('Session ended on disconnect');
+        logger.vpn.info('Session ended on disconnect');
       } catch (error) {
-        console.warn('Failed to end session on disconnect:', error);
+        logger.vpn.error('Failed to end session on disconnect', undefined, error as Error);
       }
       
       setTimeout(async () => {
@@ -332,39 +409,63 @@ function HomeScreenContent() {
           const status = await VPNManager.refreshStatus();
           applyStatus(status);
         } catch (e) {
-          console.warn('Failed to refresh status after disconnect:', e);
+          logger.vpn.error('Failed to refresh status after disconnect', undefined, e as Error);
           setIsConnecting(false);
         }
       }, 2000);
     } catch (e) {
-      console.error('Disconnect error:', e);
+      logger.vpn.error('VPN disconnect error', undefined, e as Error);
       setIsConnecting(false);
     }
   };
 
   const openPaywall = () => {
+    logger.paywall.info('Opening paywall');
     setShowPaywall(true);
   };
 
   const closePaywall = () => {
+    logger.paywall.info('Closing paywall');
     setShowPaywall(false);
   };
 
   const handlePurchaseSuccess = () => {
+    logger.paywall.info('Purchase successful, closing paywall');
     setShowPaywall(false);
   };
 
   const handleRestorePurchases = async () => {
+    logger.iap.info('Restore purchases requested');
     setRestoring(true);
     try {
-      const restored = await restoreEntitlement();
-      if (restored) {
-        Alert.alert('Success!', 'Your premium subscription has been restored!');
-      } else {
-        Alert.alert('No Active Subscription', 'No active premium subscription was found. If you believe this is an error, please contact support.');
-      }
+      await restore();
+      logger.iap.info('Restore purchases successful');
+      Alert.alert('Success!', 'Your premium subscription has been restored!');
     } catch (error) {
-      Alert.alert('Restore Failed', 'Failed to check subscription status. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.iap.error('Restore purchases failed', { errorMessage }, error as Error);
+      
+      let title = 'Restore Failed';
+      let message = 'Failed to restore purchases. Please try again.';
+
+      switch (errorMessage) {
+        case 'NO_PURCHASES':
+          title = 'No Subscription Found';
+          message = 'No subscription found for this Apple ID. If you purchased on a different Apple ID, please sign in with that account and try again.';
+          break;
+          
+        case 'NOT_ACTIVE':
+          title = 'No Active Subscription';
+          message = 'No active subscription to restore. Your subscription may have expired or been cancelled.';
+          break;
+          
+        case 'NETWORK_ERROR':
+          title = 'Connection Error';
+          message = 'Unable to connect to the server. Please check your internet connection and try again.';
+          break;
+      }
+      
+      Alert.alert(title, message);
     } finally {
       setRestoring(false);
     }
@@ -468,8 +569,8 @@ function HomeScreenContent() {
             unitId={BANNER_ID}
             size={BannerAdSize.FULL_BANNER}
             requestOptions={{ requestNonPersonalizedAdsOnly: true }}
-            onAdLoaded={() => console.log('Banner ad loaded successfully')}
-            onAdFailedToLoad={(err: any) => console.warn('Banner ad failed to load:', err)}
+            onAdLoaded={() => logger.ads.info('Banner ad loaded successfully')}
+            onAdFailedToLoad={(err: any) => logger.ads.error('Banner ad failed to load', { error: err })}
           />
         </View>
       </View>
@@ -479,7 +580,7 @@ function HomeScreenContent() {
         animationType="slide"
         presentationStyle="pageSheet"
       >
-        <PaywallScreen
+        <PaywallV2
           onClose={closePaywall}
           onPurchaseSuccess={handlePurchaseSuccess}
         />
@@ -491,9 +592,9 @@ function HomeScreenContent() {
 export default function HomeScreen() {
   return (
     <PremiumConfigProvider>
-      <PremiumProvider>
+      <EntitlementsProvider>
         <HomeScreenContent />
-      </PremiumProvider>
+      </EntitlementsProvider>
     </PremiumConfigProvider>
   );
 }

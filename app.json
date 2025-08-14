@@ -78,6 +78,10 @@
       }
     },
 
+    "env": {
+      "EXPO_PUBLIC_BACKEND_URL": "https://yhzvxiwxxpkcneqtbgeu.supabase.co/functions/v1"
+    },
+
     "experiments": {
       "typedRoutes": true
     }

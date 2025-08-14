@@ -1,5 +1,6 @@
 import React from 'react';
 import { AdEventType, BannerAd, InterstitialAd, RewardedAd, RewardedAdEventType } from 'react-native-google-mobile-ads';
+import { logger } from './logger';
 
 export const BANNER_ID = 'ca-app-pub-6842873031676463/2117401957';
 // Use test ad for now to ensure ads load
@@ -9,10 +10,12 @@ let isPremiumUser = false;
 let adsEnabled = true;
 
 export const setIsPremium = (premium: boolean) => {
+  logger.ads.info('Premium status updated', { premium });
   isPremiumUser = premium;
 };
 
 export const setAdsEnabled = (enabled: boolean) => {
+  logger.ads.info('Ads enabled status updated', { enabled });
   adsEnabled = enabled;
 };
 
@@ -27,14 +30,14 @@ const shouldBlockAds = (): boolean => {
 // Banner Ad Component Wrapper
 export const PremiumBannerAd = (props: any) => {
   const blocked = shouldBlockAds();
-  console.log('PremiumBannerAd:', { blocked, isPremiumUser, adsEnabled });
+  logger.ads.debug('PremiumBannerAd render', { blocked, isPremiumUser, adsEnabled });
   
   if (blocked) {
-    console.log('Banner ad blocked - isPremium:', isPremiumUser, 'adsEnabled:', adsEnabled);
+    logger.ads.info('Banner ad blocked', { isPremiumUser, adsEnabled });
     return null;
   }
   
-  console.log('Showing banner ad');
+  logger.ads.info('Showing banner ad');
   return <BannerAd {...props} />;
 };
 
@@ -43,12 +46,17 @@ export class PremiumRewardedAd {
   private rewardedAd: RewardedAd | null = null;
 
   constructor(adUnitId: string, requestOptions?: any) {
-    console.log('PremiumRewardedAd constructor:', { adUnitId, shouldBlock: shouldBlockAds(), isPremiumUser, adsEnabled });
+    logger.ads.info('PremiumRewardedAd constructor', { 
+      adUnitId, 
+      shouldBlock: shouldBlockAds(), 
+      isPremiumUser, 
+      adsEnabled 
+    });
     if (!shouldBlockAds()) {
       this.rewardedAd = RewardedAd.createForAdRequest(adUnitId, requestOptions);
-      console.log('PremiumRewardedAd created successfully');
+      logger.ads.info('PremiumRewardedAd created successfully');
     } else {
-      console.log('PremiumRewardedAd blocked due to premium status or ads disabled');
+      logger.ads.info('PremiumRewardedAd blocked due to premium status or ads disabled');
     }
   }
 
@@ -78,7 +86,7 @@ export class PremiumRewardedAd {
 
   load() {
     if (shouldBlockAds() || !this.rewardedAd) {
-      console.log('PremiumRewardedAd.load() blocked or no ad instance', { 
+      logger.ads.debug('PremiumRewardedAd.load() blocked or no ad instance', { 
         shouldBlock: shouldBlockAds(), 
         hasAd: !!this.rewardedAd,
         isPremiumUser,
@@ -87,20 +95,22 @@ export class PremiumRewardedAd {
       return Promise.resolve();
     }
     
-    console.log('PremiumRewardedAd.load() attempting to load ad');
+    logger.ads.info('PremiumRewardedAd.load() attempting to load ad');
     try {
       return this.rewardedAd.load();
     } catch (error) {
-      console.error('PremiumRewardedAd.load() failed:', error);
+      logger.ads.error('PremiumRewardedAd.load() failed', undefined, error as Error);
       return Promise.reject(error);
     }
   }
 
   show() {
     if (shouldBlockAds() || !this.rewardedAd) {
+      logger.ads.debug('PremiumRewardedAd.show() blocked or no ad instance');
       return Promise.resolve();
     }
     
+    logger.ads.info('PremiumRewardedAd.show() showing ad');
     return this.rewardedAd.show();
   }
 }

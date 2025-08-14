@@ -48,14 +48,13 @@ export interface RestoreResult {
 }
 
 export interface BackendValidationResponse {
-  status: number;
+  ok: boolean;
+  valid: boolean;
   environment: 'production' | 'sandbox';
-  latestProductId: string | null;
-  activeEntitlement: boolean;
-  expiresDateMs: number | null;
-  cancellationDateMs: number | null;
-  isInBillingRetryPeriod: boolean | null;
-  isInGracePeriod: boolean | null;
+  status: number;
+  expiresAt: string | null;
+  originalTransactionId: string | null;
+  productId: string | null;
 }
 
 
@@ -229,13 +228,13 @@ class IAPManager {
       // Clear watchdog timer
       this.clearWatchdog();
       
-      // Validate receipt with backend
+      // Validate receipt with Supabase backend
       let isValid = true;
       try {
         const receiptData = await getReceiptIOS({ forceRefresh: false });
         if (receiptData) {
-          const validation = await this.validateReceipt(receiptData);
-          isValid = validation.isValid;
+          const validation = await this.validateReceiptWithBackend(receiptData);
+          isValid = validation.ok && validation.valid;
           console.log('[IAP] Receipt validation result:', validation);
         }
       } catch (validationError) {
@@ -698,19 +697,27 @@ class IAPManager {
           const validationResult = await this.validateReceiptWithBackend(receiptData);
           
           console.log('[IAP][RESTORE] Backend validation result:', {
-            activeEntitlement: validationResult.activeEntitlement,
-            latestProductId: validationResult.latestProductId,
-            expiresDateMs: validationResult.expiresDateMs,
+            ok: validationResult.ok,
+            valid: validationResult.valid,
+            productId: validationResult.productId,
+            expiresAt: validationResult.expiresAt,
             environment: validationResult.environment
           });
           
-          // Check if we have an active entitlement for our target product
-          if (validationResult.activeEntitlement && 
-              validationResult.latestProductId === targetProductId) {
+          // Check if we have a valid entitlement for our target product
+          if (validationResult.ok && validationResult.valid && 
+              validationResult.productId === targetProductId) {
             console.log('[IAP][RESTORE] Active entitlement found! Restoring premium access');
+            
+            // Convert expiresAt ISO string to milliseconds if available
+            let expiresDateMs: number | undefined;
+            if (validationResult.expiresAt) {
+              expiresDateMs = new Date(validationResult.expiresAt).getTime();
+            }
+            
             return { 
               restored: true, 
-              expiresDateMs: validationResult.expiresDateMs || undefined
+              expiresDateMs
             };
           }
           
@@ -753,14 +760,8 @@ class IAPManager {
    * Validate receipt with our backend service with timeout and retry
    */
   private async validateReceiptWithBackend(receiptData: string): Promise<BackendValidationResponse> {
-    // Get backend URL from environment - MUST use HTTPS for TestFlight/production
-    const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL
-      ? `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/verifyReceipt`
-      : __DEV__
-      ? 'http://localhost:3000/api/verifyReceipt' // Dev only
-      : (() => {
-          throw new Error('EXPO_PUBLIC_BACKEND_URL not configured for production');
-        })();
+    // Use Supabase Edge Function for receipt verification
+    const backendUrl = 'https://yhzvxiwxxpkcneqtbgeu.supabase.co/functions/v1/verify-receipt';
     
     console.log('[IAP][RESTORE] Validating receipt with backend:', backendUrl);
     
@@ -780,14 +781,21 @@ class IAPManager {
         const timeoutId = setTimeout(() => controller.abort(), 10000);
         
         try {
+          const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          
+          // Add Supabase auth header if available
+          if (supabaseAnonKey) {
+            headers['Authorization'] = `Bearer ${supabaseAnonKey}`;
+          }
+          
           const response = await fetch(backendUrl, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify({
-              receiptData, // This matches backend expectation
-              productIds: ['cloakr.monthly.unlimited6'] // This matches backend expectation (though server will ignore)
+              receiptBase64: receiptData, // Supabase function expects receiptBase64
+              bundleId: 'com.vroomstudios.cloakr', // Bundle ID validation
+              productIds: ['cloakr.monthly.unlimited6'] // Product IDs to validate
             }),
             signal: controller.signal,
           });
@@ -807,11 +815,13 @@ class IAPManager {
           }
           
           const result = await response.json();
-          console.log('[IAP][RESTORE] Backend response:', {
-            status: result.status,
-            activeEntitlement: result.activeEntitlement,
+          console.log('[IAP][RESTORE] Supabase function response:', {
+            ok: result.ok,
+            valid: result.valid,
             environment: result.environment,
-            endpoint: result.validationEndpoint
+            status: result.status,
+            expiresAt: result.expiresAt,
+            productId: result.productId
           });
           
           // Log Apple status for debugging

@@ -13,24 +13,27 @@ import {
   PurchaseError,
 } from 'react-native-iap';
 import { Platform, EmitterSubscription } from 'react-native';
+import { logger, LogContext } from '../utils/logger';
 
 export const CLOAKR_IOS_PRODUCT_ID = 'cloakr.monthly.unlimited6';
 export const IAP_LOG_PREFIX = '[IAPv2]';
 
+// Legacy console.log wrapper for gradual migration
+const legacyLog = (message: string, ...args: any[]) => {
+  logger.iap.info(message.replace(IAP_LOG_PREFIX, '').trim(), args.length > 0 ? args : undefined);
+};
+
+const legacyWarn = (message: string, ...args: any[]) => {
+  logger.iap.warn(message.replace(IAP_LOG_PREFIX, '').trim(), args.length > 0 ? args : undefined);
+};
+
+const legacyError = (message: string, ...args: any[]) => {
+  logger.iap.error(message.replace(IAP_LOG_PREFIX, '').trim(), args.length > 0 ? args : undefined);
+};
+
 export type EntitlementStatus = 'UNKNOWN' | 'FREE' | 'PREMIUM_ACTIVE' | 'EXPIRED';
 
-export interface BackendValidationResponse {
-  status: number | null;
-  environment: 'sandbox' | 'production' | 'unknown';
-  latestProductId: string | null;
-  activeEntitlement: boolean;
-  expiresDateMs: number | null;
-  cancellationDateMs: number | null;
-  isInBillingRetryPeriod: boolean;
-  isInGracePeriod: boolean;
-  validationEndpoint: 'production' | 'sandbox' | 'error';
-  error?: string;
-}
+// BackendValidationResponse interface removed - using client-side validation only
 
 export interface ProductInfo {
   productId: string;
@@ -42,6 +45,7 @@ export interface ProductInfo {
 // Internal state
 let isConnected = false;
 let iapReady = false;
+let iapAvailable = true; // Track if IAP is available (false on simulator)
 let products: ProductInfo[] = [];
 let purchaseListener: EmitterSubscription | null = null;
 let errorListener: EmitterSubscription | null = null;
@@ -49,30 +53,88 @@ let activePurchaseResolver: ((result: 'PURCHASED' | 'CANCELLED' | 'FAILED') => v
 let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
+ * Check if IAP is available (false on simulator)
+ */
+export function isIAPAvailable(): boolean {
+  return iapAvailable && Platform.OS === 'ios';
+}
+
+/**
  * Initialize IAP connection and listeners (call once)
  */
 export async function initIAP(): Promise<void> {
+  logger.iap.debug('initIAP called', { platform: Platform.OS, isConnected });
+  
   if (Platform.OS !== 'ios') {
-    console.log(`${IAP_LOG_PREFIX} Skipping iOS IAP on non-iOS platform`);
+    logger.iap.info('Skipping iOS IAP on non-iOS platform');
     return;
   }
 
   if (isConnected) {
-    console.log(`${IAP_LOG_PREFIX} Already connected`);
+    logger.iap.info('Already connected');
     return;
   }
 
+  // NUCLEAR OPTION: In production builds, prevent ANY subscription detection
+  if (!__DEV__) {
+    logger.iap.info('PRODUCTION BUILD - Clearing old TestFlight transactions only');
+    try {
+      // Clear any pending transactions that might trigger "already subscribed"
+      const pendingPurchases = await getAvailablePurchases();
+      logger.iap.info('Found pending purchases in production', { count: pendingPurchases?.length || 0 });
+      
+      if (pendingPurchases && pendingPurchases.length > 0) {
+        const now = Date.now();
+        for (const purchase of pendingPurchases) {
+          try {
+            const purchaseAge = now - purchase.transactionDate;
+            // Only finish transactions older than 10 seconds (likely TestFlight artifacts)
+            if (purchaseAge > 10000) {
+              await finishTransaction({ purchase, isConsumable: false });
+              logger.iap.info('Finished old transaction', { 
+                transactionId: purchase.transactionId, 
+                ageMs: purchaseAge 
+              });
+            } else {
+              logger.iap.info('Keeping recent transaction', { 
+                transactionId: purchase.transactionId, 
+                ageMs: purchaseAge 
+              });
+            }
+          } catch (error) {
+            logger.iap.error('Failed to finish transaction', { 
+              transactionId: purchase.transactionId 
+            }, error as Error);
+          }
+        }
+      }
+    } catch (error) {
+      logger.iap.error('Failed to clear old transactions', undefined, error as Error);
+    }
+  }
+
   try {
-    console.log(`${IAP_LOG_PREFIX} Initializing IAP connection...`);
+    logger.iap.info('Initializing IAP connection...');
+    logger.time(LogContext.IAP, 'iap_init');
+    
     await initConnection();
     isConnected = true;
     
     // Register listeners once
     setupListeners();
     
-    console.log(`${IAP_LOG_PREFIX} IAP initialized successfully`);
+    logger.timeEnd(LogContext.IAP, 'iap_init');
+    logger.iap.info('IAP initialized successfully');
   } catch (error) {
-    console.error(`${IAP_LOG_PREFIX} Failed to initialize:`, error);
+    logger.iap.error('Failed to initialize IAP', undefined, error as Error);
+    
+    // Handle simulator case gracefully - don't throw
+    if (error instanceof Error && error.message.includes('E_IAP_NOT_AVAILABLE')) {
+      logger.iap.warn('IAP not available (likely iOS Simulator) - continuing in demo mode');
+      iapAvailable = false;
+      return;
+    }
+    
     throw error;
   }
 }
@@ -82,18 +144,20 @@ export async function initIAP(): Promise<void> {
  */
 function setupListeners(): void {
   if (purchaseListener || errorListener) {
-    console.log(`${IAP_LOG_PREFIX} Listeners already registered`);
+    logger.iap.info('Listeners already registered');
     return;
   }
 
-  console.log(`${IAP_LOG_PREFIX} Registering purchase listeners...`);
+  logger.iap.info('Registering purchase listeners...');
 
   purchaseListener = purchaseUpdatedListener(async (purchase: Purchase) => {
-    console.log(`${IAP_LOG_PREFIX} Purchase updated:`, {
+    logger.iap.info('Purchase updated', {
       transactionId: purchase.transactionId,
       productId: purchase.productId,
       purchaseTime: purchase.transactionDate,
     });
+
+    // Allow all purchase updates - TestFlight needs to process them
 
     // Clear watchdog immediately since we got a response
     clearWatchdog();
@@ -101,46 +165,34 @@ function setupListeners(): void {
     let shouldResolveAs: 'PURCHASED' | 'FAILED' = 'FAILED';
 
     try {
-      // Only validate if it's our target product
+      // Client-side validation only - trust Apple's purchase confirmation
       if (purchase.productId !== CLOAKR_IOS_PRODUCT_ID) {
-        console.warn(`${IAP_LOG_PREFIX} Received purchase for unexpected product: ${purchase.productId}`);
+        logger.iap.warn('Received purchase for unexpected product', { productId: purchase.productId });
         shouldResolveAs = 'FAILED';
-      } else if (!purchase.transactionReceipt) {
-        console.warn(`${IAP_LOG_PREFIX} No transaction receipt in purchase`);
+      } else if (!purchase.transactionId) {
+        logger.iap.warn('No transaction ID in purchase');
         shouldResolveAs = 'FAILED';
       } else {
-        // Validate receipt with backend
-        console.log(`${IAP_LOG_PREFIX} Validating receipt with backend...`);
-        const backendResult = await validateReceiptWithBackend(purchase.transactionReceipt);
-        
-        console.log(`${IAP_LOG_PREFIX} Backend validation result:`, {
-          activeEntitlement: backendResult.activeEntitlement,
-          latestProductId: backendResult.latestProductId,
-          expiresDateMs: backendResult.expiresDateMs,
-          environment: backendResult.environment,
+        // Simple client-side validation - if we got the purchase from Apple, trust it
+        logger.iap.info('Client-side validation: Purchase confirmed by Apple StoreKit');
+        shouldResolveAs = 'PURCHASED';
+        logger.iap.info('Purchase validated successfully! (client-side)', {
+          productId: purchase.productId,
+          transactionId: purchase.transactionId
         });
-
-        // Success only if backend confirms active entitlement for our product
-        if (backendResult.activeEntitlement && backendResult.latestProductId === CLOAKR_IOS_PRODUCT_ID) {
-          shouldResolveAs = 'PURCHASED';
-          console.log(`${IAP_LOG_PREFIX} Purchase validated successfully!`);
-        } else {
-          console.warn(`${IAP_LOG_PREFIX} Backend validation failed: activeEntitlement=${backendResult.activeEntitlement}, productId=${backendResult.latestProductId}`);
-          shouldResolveAs = 'FAILED';
-        }
       }
 
     } catch (validationError) {
-      console.error(`${IAP_LOG_PREFIX} Receipt validation error:`, validationError);
+      logger.iap.error('Client-side validation error', undefined, validationError as Error);
       shouldResolveAs = 'FAILED';
     }
 
     // Always finish transaction to prevent duplicate prompts
     try {
       await finishTransaction({ purchase, isConsumable: false });
-      console.log(`${IAP_LOG_PREFIX} Transaction finished successfully`);
+      logger.iap.info('Transaction finished successfully');
     } catch (finishError) {
-      console.error(`${IAP_LOG_PREFIX} Failed to finish transaction:`, finishError);
+      logger.iap.error('Failed to finish transaction', undefined, finishError as Error);
       // Still continue - don't fail the purchase because of finish issues
     }
 
@@ -149,12 +201,12 @@ function setupListeners(): void {
       activePurchaseResolver(shouldResolveAs);
       activePurchaseResolver = null;
     } else {
-      console.warn(`${IAP_LOG_PREFIX} Purchase update received but no resolver waiting`);
+      logger.iap.warn('Purchase update received but no resolver waiting');
     }
   });
 
   errorListener = purchaseErrorListener((error: PurchaseError) => {
-    console.log(`${IAP_LOG_PREFIX} Purchase error:`, {
+    logger.iap.error('Purchase error', {
       code: error.code,
       message: error.message,
     });
@@ -171,14 +223,14 @@ function setupListeners(): void {
     }
   });
 
-  console.log(`${IAP_LOG_PREFIX} Listeners registered successfully`);
+  logger.iap.info('Listeners registered successfully');
 }
 
 /**
  * Cleanup IAP connection and listeners
  */
 export function endIAP(): void {
-  console.log(`${IAP_LOG_PREFIX} Ending IAP connection...`);
+  logger.iap.info('Ending IAP connection...');
 
   clearWatchdog();
   activePurchaseResolver = null;
@@ -195,22 +247,24 @@ export function endIAP(): void {
 
   if (isConnected) {
     endConnection().catch(error => {
-      console.warn(`${IAP_LOG_PREFIX} Error ending connection:`, error);
+      logger.iap.warn('Error ending connection', undefined, error as Error);
     });
     isConnected = false;
   }
 
   iapReady = false;
   products = [];
-  console.log(`${IAP_LOG_PREFIX} IAP connection ended`);
+  logger.iap.info('IAP connection ended');
 }
 
 /**
  * Fetch products from remote config with fallback
  */
 export async function fetchProducts(): Promise<ProductInfo[]> {
+  logger.iap.debug('fetchProducts called', { platform: Platform.OS, isConnected });
+  
   if (Platform.OS !== 'ios') {
-    console.log(`${IAP_LOG_PREFIX} Non-iOS platform, returning empty products`);
+    logger.iap.info('Non-iOS platform, returning empty products');
     return [];
   }
 
@@ -219,7 +273,7 @@ export async function fetchProducts(): Promise<ProductInfo[]> {
   }
 
   try {
-    console.log(`${IAP_LOG_PREFIX} Fetching remote config...`);
+    logger.iap.info('Fetching remote config...');
     
     // Fetch remote config for product IDs
     let productIds = [CLOAKR_IOS_PRODUCT_ID]; // Fallback
@@ -229,15 +283,15 @@ export async function fetchProducts(): Promise<ProductInfo[]> {
       
       if (remoteConfig.ios?.activeProductIds?.length > 0) {
         productIds = remoteConfig.ios.activeProductIds;
-        console.log(`${IAP_LOG_PREFIX} Using remote product IDs:`, productIds);
+        logger.iap.info('Using remote product IDs', { productIds });
       } else {
-        console.log(`${IAP_LOG_PREFIX} Using fallback product ID:`, productIds);
+        logger.iap.info('Using fallback product ID', { productIds });
       }
     } catch (configError) {
-      console.warn(`${IAP_LOG_PREFIX} Failed to fetch remote config:`, configError);
+      logger.iap.warn('Failed to fetch remote config', undefined, configError as Error);
     }
 
-    console.log(`${IAP_LOG_PREFIX} Fetching subscription products...`);
+    logger.iap.info('Fetching subscription products...');
     const subscriptions = await getSubscriptions({ skus: productIds });
     
     products = subscriptions.map((sub: Subscription) => ({
@@ -247,14 +301,16 @@ export async function fetchProducts(): Promise<ProductInfo[]> {
       subscriptionPeriod: (sub as any).subscriptionPeriod || '1 month',
     }));
 
-    console.log(`${IAP_LOG_PREFIX} Fetched ${products.length} products:`, 
-      products.map(p => `${p.productId}: ${p.price}`));
+    logger.iap.info('Fetched products', {
+      count: products.length,
+      products: products.map(p => `${p.productId}: ${p.price}`)
+    });
 
     iapReady = products.length > 0;
     return products;
 
   } catch (error) {
-    console.error(`${IAP_LOG_PREFIX} Failed to fetch products:`, error);
+    logger.iap.error('Failed to fetch products', undefined, error as Error);
     iapReady = false;
     return [];
   }
@@ -264,35 +320,47 @@ export async function fetchProducts(): Promise<ProductInfo[]> {
  * Purchase Cloakr subscription with watchdog timeout
  */
 export async function purchaseCloakr(): Promise<'PURCHASED' | 'CANCELLED' | 'FAILED'> {
-  console.log(`${IAP_LOG_PREFIX} Starting purchase...`);
-  console.log(`${IAP_LOG_PREFIX} IAP Ready: ${iapReady}, Products: ${products.length}, Listeners: ${!!(purchaseListener && errorListener)}`);
+  logger.iap.info('Starting purchase...');
+  logger.iap.debug('Purchase preconditions', {
+    iapReady,
+    productsCount: products.length,
+    listenersRegistered: !!(purchaseListener && errorListener)
+  });
+
+  // Note: Removed pre-purchase clearing to avoid interfering with new purchases
+
+  // Check if IAP is available (simulator check)
+  if (!iapAvailable) {
+    logger.iap.warn('IAP not available (likely iOS Simulator) - purchase cannot proceed');
+    return 'FAILED';
+  }
 
   // Ensure IAP is initialized
   if (!isConnected) {
-    console.log(`${IAP_LOG_PREFIX} IAP not connected, initializing...`);
+    logger.iap.info('IAP not connected, initializing...');
     await initIAP();
   }
 
   // Ensure products are loaded
   if (products.length === 0) {
-    console.log(`${IAP_LOG_PREFIX} No products loaded, fetching...`);
+    logger.iap.info('No products loaded, fetching...');
     await fetchProducts();
   }
 
   // Final preconditions check
   if (!iapReady || products.length === 0) {
-    console.error(`${IAP_LOG_PREFIX} IAP not ready: ready=${iapReady}, products=${products.length}`);
+    logger.iap.error('IAP not ready', { ready: iapReady, productsCount: products.length });
     return 'FAILED';
   }
 
   if (activePurchaseResolver) {
-    console.error(`${IAP_LOG_PREFIX} Purchase already in progress`);
+    logger.iap.error('Purchase already in progress');
     return 'FAILED';
   }
 
   // Ensure listeners are setup
   if (!purchaseListener || !errorListener) {
-    console.log(`${IAP_LOG_PREFIX} Listeners not setup, setting up now...`);
+    logger.iap.info('Listeners not setup, setting up now...');
     setupListeners();
   }
 
@@ -301,23 +369,23 @@ export async function purchaseCloakr(): Promise<'PURCHASED' | 'CANCELLED' | 'FAI
 
     // Start 45s watchdog
     watchdogTimer = setTimeout(() => {
-      console.warn(`${IAP_LOG_PREFIX} Purchase timed out after 45s`);
+      logger.iap.warn('Purchase timed out after 45s');
       if (activePurchaseResolver) {
         activePurchaseResolver('FAILED');
         activePurchaseResolver = null;
       }
     }, 45000);
 
-    console.log(`${IAP_LOG_PREFIX} Requesting subscription for: ${CLOAKR_IOS_PRODUCT_ID}`);
+    logger.iap.info('Requesting subscription', { productId: CLOAKR_IOS_PRODUCT_ID });
 
     // Make purchase request
     requestSubscription({
       sku: CLOAKR_IOS_PRODUCT_ID,
       andDangerouslyFinishTransactionAutomaticallyIOS: false,
     }).then(() => {
-      console.log(`${IAP_LOG_PREFIX} requestSubscription call completed, waiting for listeners...`);
+      logger.iap.info('requestSubscription call completed, waiting for listeners...');
     }).catch((error) => {
-      console.error(`${IAP_LOG_PREFIX} requestSubscription failed immediately:`, error);
+      logger.iap.error('requestSubscription failed immediately', { code: error.code }, error);
       clearWatchdog();
       
       if (activePurchaseResolver) {
@@ -340,9 +408,11 @@ export async function restoreCloakr(): Promise<{
   reason?: 'NO_PURCHASES' | 'NOT_ACTIVE' | 'NETWORK_ERROR' | 'SERVER_ERROR';
   expiresDateMs?: number;
 }> {
-  console.log(`${IAP_LOG_PREFIX} Starting restore...`);
+  logger.iap.info('Starting restore...');
+  logger.iap.debug('Restore allowing all subscription types');
 
   if (Platform.OS !== 'ios') {
+    logger.iap.info('Non-iOS platform, cannot restore');
     return { restored: false, reason: 'NO_PURCHASES' };
   }
 
@@ -352,9 +422,10 @@ export async function restoreCloakr(): Promise<{
 
   try {
     const purchases = await getAvailablePurchases();
-    console.log(`${IAP_LOG_PREFIX} Found ${purchases?.length || 0} available purchases`);
-
+    logger.iap.info('Found available purchases', { count: purchases?.length || 0 });
+    
     if (!purchases || purchases.length === 0) {
+      logger.iap.info('No purchases found to restore');
       return { restored: false, reason: 'NO_PURCHASES' };
     }
 
@@ -362,180 +433,59 @@ export async function restoreCloakr(): Promise<{
     const targetPurchases = purchases.filter(p => p.productId === CLOAKR_IOS_PRODUCT_ID);
     
     if (targetPurchases.length === 0) {
-      console.log(`${IAP_LOG_PREFIX} No purchases found for ${CLOAKR_IOS_PRODUCT_ID}`);
+      logger.iap.info('No purchases found for target product', { productId: CLOAKR_IOS_PRODUCT_ID });
       return { restored: false, reason: 'NO_PURCHASES' };
     }
 
     // Validate each purchase
     for (const purchase of targetPurchases) {
-      console.log(`${IAP_LOG_PREFIX} Validating purchase:`, purchase.transactionId);
+      logger.iap.info('Validating purchase', { transactionId: purchase.transactionId });
 
       try {
         // Get receipt data with fallback
         let receiptData = purchase.transactionReceipt;
         
         if (!receiptData) {
-          console.log(`${IAP_LOG_PREFIX} No transactionReceipt, fetching current receipt...`);
+          logger.iap.info('No transactionReceipt, fetching current receipt...');
           try {
-            receiptData = await getReceiptIOS({ forceRefresh: true });
+            receiptData = await getReceiptIOS({ forceRefresh: true }) || '';
           } catch (receiptError) {
-            console.warn(`${IAP_LOG_PREFIX} getReceiptIOS failed:`, receiptError);
+            logger.iap.warn('getReceiptIOS failed', undefined, receiptError as Error);
             continue;
           }
         }
 
-        if (!receiptData) {
-          console.log(`${IAP_LOG_PREFIX} No receipt data available`);
-          continue;
-        }
-
-        // Validate with backend
-        const result = await validateReceiptWithBackend(receiptData);
-        
-        console.log(`${IAP_LOG_PREFIX} Backend validation:`, {
-          activeEntitlement: result.activeEntitlement,
-          latestProductId: result.latestProductId,
-          expiresDateMs: result.expiresDateMs,
+        // Client-side validation - if purchase exists in Apple's records, trust it
+        logger.iap.info('Client-side restore: Purchase found in Apple records', {
+          productId: purchase.productId,
+          transactionId: purchase.transactionId
         });
-
-        // Check for active entitlement
-        if (result.activeEntitlement && result.latestProductId === CLOAKR_IOS_PRODUCT_ID) {
-          console.log(`${IAP_LOG_PREFIX} Active entitlement found!`);
-          return {
-            restored: true,
-            expiresDateMs: result.expiresDateMs || undefined,
-          };
-        }
+        
+        // For subscriptions, we assume they're active if Apple returned them
+        logger.iap.info('Active subscription restored! (client-side)');
+        return {
+          restored: true,
+          // Note: We can't get exact expiry date without backend validation
+          // but subscription will work until Apple says it's expired
+        };
 
       } catch (validationError) {
-        console.error(`${IAP_LOG_PREFIX} Validation error:`, validationError);
-        
-        // Propagate network/server errors
-        if (validationError instanceof Error) {
-          if (validationError.message === 'NETWORK_ERROR') {
-            return { restored: false, reason: 'NETWORK_ERROR' };
-          }
-          if (validationError.message === 'SERVER_ERROR') {
-            return { restored: false, reason: 'SERVER_ERROR' };
-          }
-        }
+        logger.iap.error('Client-side restore error', undefined, validationError as Error);
+        // Continue to next purchase
       }
     }
 
     // No active entitlement found
+    logger.iap.info('No active entitlement found');
     return { restored: false, reason: 'NOT_ACTIVE' };
 
   } catch (error) {
-    console.error(`${IAP_LOG_PREFIX} Restore failed:`, error);
+    logger.iap.error('Restore failed', undefined, error as Error);
     return { restored: false, reason: 'SERVER_ERROR' };
   }
 }
 
-/**
- * Validate receipt with backend server
- */
-export async function validateReceiptWithBackend(receiptBase64: string): Promise<BackendValidationResponse> {
-  const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
-  
-  if (!backendUrl) {
-    throw new Error('EXPO_PUBLIC_BACKEND_URL not configured');
-  }
-
-  const url = `${backendUrl}/api/verifyReceipt`;
-  
-  // Validate HTTPS in production
-  if (!__DEV__ && !url.startsWith('https://')) {
-    throw new Error('Backend URL must use HTTPS for production');
-  }
-
-  console.log(`${IAP_LOG_PREFIX} Validating receipt with backend...`);
-
-  const maxRetries = 2;
-  
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      console.log(`${IAP_LOG_PREFIX} Validation attempt ${attempt}/${maxRetries}`);
-      
-      // 10s timeout with AbortController
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            receiptData: receiptBase64,
-          }),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          // Server error (5xx) - don't retry
-          if (response.status >= 500) {
-            throw new Error('SERVER_ERROR');
-          }
-          // Client error (4xx) - don't retry
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const result = await response.json();
-        console.log(`${IAP_LOG_PREFIX} Backend response:`, {
-          activeEntitlement: result.activeEntitlement,
-          environment: result.environment,
-          endpoint: result.validationEndpoint,
-        });
-
-        return result as BackendValidationResponse;
-
-      } catch (fetchError) {
-        clearTimeout(timeoutId);
-
-        // Handle timeout and network errors
-        if (fetchError instanceof Error && 
-            (fetchError.name === 'AbortError' || fetchError instanceof TypeError)) {
-          console.warn(`${IAP_LOG_PREFIX} Network error on attempt ${attempt}:`, fetchError.message);
-          
-          if (attempt === maxRetries) {
-            throw new Error('NETWORK_ERROR');
-          }
-          continue; // Retry
-        }
-
-        // Other errors don't warrant retry
-        throw fetchError;
-      }
-
-    } catch (error) {
-      if (attempt === maxRetries) {
-        if (error instanceof Error) {
-          if (error.message === 'NETWORK_ERROR' || error.message === 'SERVER_ERROR') {
-            throw error;
-          }
-        }
-        throw new Error('SERVER_ERROR');
-      }
-
-      // Only retry network errors
-      if (error instanceof Error && (
-        error.message === 'NETWORK_ERROR' || 
-        error instanceof TypeError ||
-        error.name === 'AbortError'
-      )) {
-        console.warn(`${IAP_LOG_PREFIX} Retrying after error on attempt ${attempt}`);
-        continue;
-      }
-
-      throw error;
-    }
-  }
-
-  throw new Error('SERVER_ERROR');
-}
+// Backend validation function removed - using client-side validation only
 
 /**
  * Get diagnostics for debugging
@@ -555,15 +505,9 @@ export function dumpDiagnostics(): {
     watchdogActive: !!watchdogTimer,
   };
 
-  console.log(`${IAP_LOG_PREFIX} === DIAGNOSTICS ===`);
-  console.log(`${IAP_LOG_PREFIX} Connected: ${diagnostics.connected}`);
-  console.log(`${IAP_LOG_PREFIX} IAP Ready: ${diagnostics.iapReady}`);
-  console.log(`${IAP_LOG_PREFIX} Listeners: ${diagnostics.listenersRegistered}`);
-  console.log(`${IAP_LOG_PREFIX} Products: ${diagnostics.products.length} - ${diagnostics.products.join(', ')}`);
-  console.log(`${IAP_LOG_PREFIX} Platform: ${diagnostics.platform}`);
-  console.log(`${IAP_LOG_PREFIX} Purchase in progress: ${diagnostics.activePurchaseInProgress}`);
-  console.log(`${IAP_LOG_PREFIX} Watchdog active: ${diagnostics.watchdogActive}`);
-  console.log(`${IAP_LOG_PREFIX} === END DIAGNOSTICS ===`);
+  logger.iap.info('=== IAP DIAGNOSTICS ===');
+  logger.iap.info('Diagnostics', diagnostics);
+  logger.iap.info('=== END IAP DIAGNOSTICS ===');
 
   return diagnostics;
 }

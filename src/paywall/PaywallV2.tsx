@@ -11,14 +11,8 @@ import {
   ScrollView,
 } from 'react-native';
 import { FontAwesome5 } from '@expo/vector-icons';
-import { 
-  purchaseSubscription, 
-  restoreSubscription, 
-  loadProductAndPrice, 
-  getCachedPrice, 
-  openManageSubscriptions,
-  initIAP 
-} from '../iap/iap';
+import { useEntitlements } from '../iap/EntitlementsContext';
+import { IAP_LOG_PREFIX } from '../iap/iapV2';
 
 interface PaywallV2Props {
   onClose: () => void;
@@ -40,6 +34,8 @@ export const PaywallV2: React.FC<PaywallV2Props> = ({
     isPremium, 
     price, 
     loading, 
+    validatingPurchase,
+    iapAvailable,
     buy, 
     restore, 
     openManageSubscriptions 
@@ -75,11 +71,19 @@ export const PaywallV2: React.FC<PaywallV2Props> = ({
     }
   }, [price]);
 
+  // Auto-close paywall if user is already premium
+  useEffect(() => {
+    if (isPremium) {
+      console.log(`${IAP_LOG_PREFIX} User is already premium, closing paywall`);
+      onPurchaseSuccess?.();
+    }
+  }, [isPremium, onPurchaseSuccess]);
+
   /**
    * Handle purchase button tap
    */
   const handlePurchase = useCallback(async () => {
-    if (purchasing || loading) {
+    if (purchasing || loading || validatingPurchase) {
       console.log(`${IAP_LOG_PREFIX} Purchase blocked - already in progress`);
       return;
     }
@@ -94,8 +98,8 @@ export const PaywallV2: React.FC<PaywallV2Props> = ({
       dumpDiagnostics();
 
       console.log(`${IAP_LOG_PREFIX} Calling buy() function...`);
-      const result = await buy();
-      console.log(`${IAP_LOG_PREFIX} Buy result: ${result}`);
+      await buy();
+      console.log(`${IAP_LOG_PREFIX} Buy completed successfully`);
       
       // Success - buy() should handle the purchase flow validation
       Alert.alert(
@@ -127,7 +131,7 @@ export const PaywallV2: React.FC<PaywallV2Props> = ({
       console.log(`${IAP_LOG_PREFIX} Purchase flow completed, clearing loading state`);
       setPurchasing(false);
     }
-  }, [purchasing, loading, buy, onPurchaseSuccess]);
+  }, [purchasing, loading, validatingPurchase, buy, onPurchaseSuccess]);
 
   /**
    * Handle restore button tap
@@ -213,21 +217,20 @@ export const PaywallV2: React.FC<PaywallV2Props> = ({
   }, []);
 
   const displayPrice = price || 'Loading price...';
-  const canPurchase = !purchasing && !loading && !!price;
-
-  // TEMPORARY DEBUG FUNCTION - Remove after fixing
-  const debugIAP = async () => {
-    console.log('🔍 === DEBUG IAP START ===');
-    
-    try {
-      console.log('🔍 Testing direct purchase call...');
-      const result = await purchaseSubscription();
-      console.log('🔍 Direct purchase result:', result);
-      
-    } catch (error) {
-      console.error('🔍 Debug test failed:', error);
-    }
+  const canPurchase = !purchasing && !loading && !validatingPurchase && !!price && iapAvailable && !isPremium;
+  
+  // Determine button text and state
+  const getButtonText = () => {
+    if (isPremium) return 'Already Subscribed';
+    if (!iapAvailable) return 'Not available on simulator';
+    if (purchasing) return 'Processing...';
+    if (validatingPurchase) return 'Purchase successful—verifying...';
+    if (loading) return 'Loading...';
+    return price ? `Subscribe for ${price}/month` : 'Loading...';
   };
+  
+  const isButtonLoading = purchasing || loading || validatingPurchase;
+
 
   return (
     <SafeAreaView style={styles.container}>
@@ -275,13 +278,6 @@ export const PaywallV2: React.FC<PaywallV2Props> = ({
           </Text>
         </View>
 
-        {/* TEMPORARY DEBUG BUTTON - Remove after fixing */}
-        <TouchableOpacity
-          style={[styles.purchaseButton, { backgroundColor: '#dc2626', marginBottom: 16 }]}
-          onPress={debugIAP}
-        >
-          <Text style={styles.purchaseButtonText}>🔍 DEBUG IAP</Text>
-        </TouchableOpacity>
 
         {/* Purchase Button */}
         <TouchableOpacity
@@ -292,13 +288,13 @@ export const PaywallV2: React.FC<PaywallV2Props> = ({
           onPress={handlePurchase}
           disabled={!canPurchase}
         >
-          {purchasing ? (
+          {isButtonLoading ? (
             <ActivityIndicator color="#fff" />
           ) : (
             <>
               <FontAwesome5 name="crown" size={16} color="#fff" style={{ marginRight: 8 }} />
               <Text style={styles.purchaseButtonText}>
-                {price ? `Subscribe for ${price}/month` : 'Loading...'}
+                {getButtonText()}
               </Text>
             </>
           )}

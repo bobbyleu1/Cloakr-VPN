@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, NativeModules, Alert } from 'react-native';
 import * as BackgroundFetch from 'expo-background-fetch';
 import * as TaskManager from 'expo-task-manager';
+import { logger } from '../utils/logger';
 
 const { VPNManager } = NativeModules;
 
@@ -56,44 +57,73 @@ class SessionManager {
     const now = Date.now();
     const endTimestamp = now + (durationInSeconds * 1000);
     
-    await AsyncStorage.multiSet([
-      [SESSION_STORAGE_KEYS.SESSION_START_TIME, now.toString()],
-      [SESSION_STORAGE_KEYS.SESSION_DURATION, durationInSeconds.toString()],
-      [SESSION_STORAGE_KEYS.SESSION_ACTIVE, 'true'],
-      [SESSION_STORAGE_KEYS.TIMER_END_TIMESTAMP, endTimestamp.toString()],
-      [SESSION_STORAGE_KEYS.LAST_CHECK_TIME, now.toString()],
-    ]);
-
-    console.log('Session started:', {
-      startTime: new Date(now),
-      duration: durationInSeconds,
-      endTime: new Date(endTimestamp)
+    logger.session.info('Starting VPN session', {
+      durationSeconds: durationInSeconds,
+      startTime: now,
+      endTime: endTimestamp
     });
+    
+    try {
+      await AsyncStorage.multiSet([
+        [SESSION_STORAGE_KEYS.SESSION_START_TIME, now.toString()],
+        [SESSION_STORAGE_KEYS.SESSION_DURATION, durationInSeconds.toString()],
+        [SESSION_STORAGE_KEYS.SESSION_ACTIVE, 'true'],
+        [SESSION_STORAGE_KEYS.TIMER_END_TIMESTAMP, endTimestamp.toString()],
+        [SESSION_STORAGE_KEYS.LAST_CHECK_TIME, now.toString()],
+      ]);
+      
+      logger.session.debug('Session data stored to AsyncStorage');
+    } catch (error) {
+      logger.session.error('Failed to store session data', undefined, error as Error);
+      throw error;
+    }
 
     this.startSessionTimer();
     await this.updateBackgroundFetch();
+    
+    logger.session.info('VPN session started successfully', {
+      startTime: new Date(now).toISOString(),
+      duration: durationInSeconds,
+      endTime: new Date(endTimestamp).toISOString()
+    });
   }
 
   // Extend current session
   async extendSession(additionalSeconds: number, maxTotalSeconds: number = 43200): Promise<void> {
+    logger.session.info('Extending session', { additionalSeconds, maxTotalSeconds });
+    
     const session = await this.getCurrentSession();
     if (!session.isActive) {
-      throw new Error('No active session to extend');
+      const error = new Error('No active session to extend');
+      logger.session.error('Cannot extend session - no active session', { session }, error);
+      throw error;
     }
 
     const newDuration = Math.min(session.remainingTime + additionalSeconds, maxTotalSeconds);
     const newEndTimestamp = Date.now() + (newDuration * 1000);
 
-    await AsyncStorage.multiSet([
-      [SESSION_STORAGE_KEYS.SESSION_DURATION, newDuration.toString()],
-      [SESSION_STORAGE_KEYS.TIMER_END_TIMESTAMP, newEndTimestamp.toString()],
-    ]);
-
-    console.log('Session extended:', {
+    logger.session.debug('Calculated new session duration', {
+      currentRemainingTime: session.remainingTime,
       additionalSeconds,
       newDuration,
-      newEndTime: new Date(newEndTimestamp)
+      newEndTimestamp
     });
+
+    try {
+      await AsyncStorage.multiSet([
+        [SESSION_STORAGE_KEYS.SESSION_DURATION, newDuration.toString()],
+        [SESSION_STORAGE_KEYS.TIMER_END_TIMESTAMP, newEndTimestamp.toString()],
+      ]);
+      
+      logger.session.info('Session extended successfully', {
+        additionalSeconds,
+        newDuration,
+        newEndTime: new Date(newEndTimestamp).toISOString()
+      });
+    } catch (error) {
+      logger.session.error('Failed to extend session', undefined, error as Error);
+      throw error;
+    }
 
     const updatedSession = await this.getCurrentSession();
     this.onSessionUpdatedCallback?.(updatedSession);
@@ -101,15 +131,24 @@ class SessionManager {
 
   // End the current session
   async endSession(): Promise<void> {
-    await AsyncStorage.multiSet([
-      [SESSION_STORAGE_KEYS.SESSION_ACTIVE, 'false'],
-      [SESSION_STORAGE_KEYS.TIMER_END_TIMESTAMP, ''],
-    ]);
+    logger.session.info('Ending session...');
+    
+    try {
+      await AsyncStorage.multiSet([
+        [SESSION_STORAGE_KEYS.SESSION_ACTIVE, 'false'],
+        [SESSION_STORAGE_KEYS.TIMER_END_TIMESTAMP, ''],
+      ]);
+      
+      logger.session.debug('Session data cleared from AsyncStorage');
+    } catch (error) {
+      logger.session.error('Failed to clear session data', undefined, error as Error);
+      throw error;
+    }
 
     this.stopSessionTimer();
     await this.unregisterBackgroundFetch();
     
-    console.log('Session ended');
+    logger.session.info('Session ended successfully');
   }
 
   // Get current session data
@@ -138,22 +177,27 @@ class SessionManager {
         remainingTime = Math.max(0, Math.floor((endTimestamp - now) / 1000));
       }
 
-      return {
+      const sessionData = {
         isActive,
         startTime,
         duration,
         endTimestamp,
         remainingTime,
       };
+      
+      logger.session.debug('Retrieved current session data', sessionData);
+      return sessionData;
     } catch (error) {
-      console.warn('Failed to get current session:', error);
-      return {
+      logger.session.error('Failed to get current session', undefined, error as Error);
+      const fallbackSession = {
         isActive: false,
         startTime: null,
         duration: 0,
         endTimestamp: null,
         remainingTime: 0,
       };
+      logger.session.debug('Returning fallback session data', fallbackSession);
+      return fallbackSession;
     }
   }
 
@@ -161,7 +205,14 @@ class SessionManager {
   async checkSessionExpiry(): Promise<boolean> {
     const session = await this.getCurrentSession();
     
+    logger.session.debug('Checking session expiry', {
+      isActive: session.isActive,
+      endTimestamp: session.endTimestamp,
+      remainingTime: session.remainingTime
+    });
+    
     if (!session.isActive || !session.endTimestamp) {
+      logger.session.debug('No active session or end timestamp, no expiry check needed');
       return false;
     }
 
@@ -169,7 +220,11 @@ class SessionManager {
     const hasExpired = now >= session.endTimestamp;
 
     if (hasExpired) {
-      console.log('Session expired, auto-disconnecting VPN');
+      logger.session.warn('Session expired, auto-disconnecting VPN', {
+        endTimestamp: session.endTimestamp,
+        currentTime: now,
+        expiredBy: now - session.endTimestamp
+      });
       
       // Clear session data
       await this.endSession();
@@ -177,7 +232,9 @@ class SessionManager {
       // Check if VPN is still connected and disconnect
       return new Promise((resolve) => {
         VPNManager?.getStatus?.((status: string) => {
+          logger.session.info('VPN status check after expiry', { status });
           if (status === 'connected') {
+            logger.session.info('Disconnecting VPN due to session expiry');
             VPNManager?.disconnect?.();
             this.onSessionExpiredCallback?.();
           }
@@ -187,7 +244,12 @@ class SessionManager {
     }
 
     // Update last check time
-    await AsyncStorage.setItem(SESSION_STORAGE_KEYS.LAST_CHECK_TIME, now.toString());
+    try {
+      await AsyncStorage.setItem(SESSION_STORAGE_KEYS.LAST_CHECK_TIME, now.toString());
+      logger.session.debug('Updated last check time', { time: now });
+    } catch (error) {
+      logger.session.error('Failed to update last check time', undefined, error as Error);
+    }
     
     // Notify about session update
     this.onSessionUpdatedCallback?.(session);
@@ -219,12 +281,14 @@ class SessionManager {
   // Handle app state changes
   private setupAppStateListener() {
     AppState.addEventListener('change', async (nextAppState) => {
-      console.log('SessionManager: App state changed to:', nextAppState);
+      logger.session.info('App state changed', { nextAppState });
       
       if (nextAppState === 'active') {
+        logger.session.debug('App came to foreground, checking for expired sessions');
         // App came to foreground - check for expired sessions
         const expired = await this.checkSessionExpiry();
         if (expired && AppState.currentState === 'active') {
+          logger.session.warn('Session expired while app was backgrounded');
           // Show alert if session expired while backgrounded
           setTimeout(() => {
             Alert.alert(
@@ -237,12 +301,18 @@ class SessionManager {
         // Restart foreground timer
         const session = await this.getCurrentSession();
         if (session.isActive) {
+          logger.session.debug('Restarting session timer for active session');
           this.startSessionTimer();
         }
       } else if (nextAppState === 'background' || nextAppState === 'inactive') {
+        logger.session.debug('App going to background, stopping session timer');
         // App going to background - save current state and stop foreground timer
         this.stopSessionTimer();
-        await AsyncStorage.setItem(SESSION_STORAGE_KEYS.LAST_CHECK_TIME, Date.now().toString());
+        try {
+          await AsyncStorage.setItem(SESSION_STORAGE_KEYS.LAST_CHECK_TIME, Date.now().toString());
+        } catch (error) {
+          logger.session.error('Failed to save last check time on background', undefined, error as Error);
+        }
       }
     });
   }
@@ -250,33 +320,36 @@ class SessionManager {
   // Register background fetch for session monitoring
   private async registerBackgroundTask() {
     if (this.backgroundTaskRegistered) {
+      logger.session.debug('Background task already registered');
       return;
     }
 
     try {
+      logger.session.info('Registering background task for session monitoring');
       // Define background task
       TaskManager.defineTask(BACKGROUND_SESSION_CHECK, async () => {
-        console.log('Background task: Checking session expiry');
+        logger.session.debug('Background task executing: Checking session expiry');
         
         try {
           const expired = await this.checkSessionExpiry();
           
           if (expired) {
-            console.log('Background task: Session expired, VPN disconnected');
+            logger.session.info('Background task: Session expired, VPN disconnected');
             return BackgroundFetch.BackgroundFetchResult.NewData;
           }
           
+          logger.session.debug('Background task: No session expiry');
           return BackgroundFetch.BackgroundFetchResult.NoData;
         } catch (error) {
-          console.warn('Background task error:', error);
+          logger.session.error('Background task error', undefined, error as Error);
           return BackgroundFetch.BackgroundFetchResult.Failed;
         }
       });
 
       this.backgroundTaskRegistered = true;
-      console.log('Background task registered successfully');
+      logger.session.info('Background task registered successfully');
     } catch (error) {
-      console.warn('Failed to register background task:', error);
+      logger.session.error('Failed to register background task', undefined, error as Error);
     }
   }
 
@@ -285,18 +358,20 @@ class SessionManager {
     try {
       const session = await this.getCurrentSession();
       
+      logger.session.debug('Updating background fetch', { sessionActive: session.isActive });
+      
       if (session.isActive) {
         // Check if already registered to avoid duplicates
         const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_SESSION_CHECK);
         if (isRegistered) {
-          console.log('Background fetch already registered, skipping');
+          logger.session.debug('Background fetch already registered, skipping');
           return;
         }
 
         // Register background fetch for active sessions
         const status = await BackgroundFetch.getStatusAsync();
         if (status !== BackgroundFetch.BackgroundFetchStatus.Available) {
-          console.warn('Background fetch not available');
+          logger.session.warn('Background fetch not available', { status });
           return;
         }
 
@@ -306,10 +381,10 @@ class SessionManager {
           startOnBoot: false,
         });
         
-        console.log('Background fetch registered for session monitoring');
+        logger.session.info('Background fetch registered for session monitoring');
       }
     } catch (error) {
-      console.warn('Failed to update background fetch:', error);
+      logger.session.error('Failed to update background fetch', undefined, error as Error);
     }
   }
 
@@ -320,43 +395,50 @@ class SessionManager {
       const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_SESSION_CHECK);
       if (isRegistered) {
         await BackgroundFetch.unregisterTaskAsync(BACKGROUND_SESSION_CHECK);
-        console.log('Background fetch unregistered');
+        logger.session.info('Background fetch unregistered');
       } else {
-        console.log('Background fetch task not registered, skipping unregister');
+        logger.session.debug('Background fetch task not registered, skipping unregister');
       }
     } catch (error) {
-      console.warn('Failed to unregister background fetch:', error);
+      logger.session.error('Failed to unregister background fetch', undefined, error as Error);
     }
   }
 
   // Initialize session manager (call on app start)
   async initialize(): Promise<void> {
-    console.log('SessionManager: Initializing...');
+    logger.session.info('Initializing SessionManager...');
     
     // Check for any existing active session
     const session = await this.getCurrentSession();
     
     if (session.isActive) {
-      console.log('SessionManager: Found active session, checking expiry...');
+      logger.session.info('Found active session, checking expiry...', {
+        remainingTime: session.remainingTime,
+        endTimestamp: session.endTimestamp
+      });
       const expired = await this.checkSessionExpiry();
       
       if (!expired && session.remainingTime > 0) {
         // Resume session monitoring
         this.startSessionTimer();
         await this.updateBackgroundFetch();
-        console.log('SessionManager: Resumed session monitoring');
+        logger.session.info('Resumed session monitoring', { remainingTime: session.remainingTime });
       }
+    } else {
+      logger.session.debug('No active session found');
     }
     
-    console.log('SessionManager: Initialized');
+    logger.session.info('SessionManager initialized');
   }
 
   // Clean up resources
   destroy() {
+    logger.session.info('Destroying SessionManager...');
     this.stopSessionTimer();
     this.unregisterBackgroundFetch();
     this.onSessionExpiredCallback = null;
     this.onSessionUpdatedCallback = null;
+    logger.session.info('SessionManager destroyed');
   }
 }
 

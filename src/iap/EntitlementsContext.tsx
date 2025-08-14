@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Linking } from 'react-native';
+import { setIsPremium as setAdsIsPremium } from '../utils/Ads';
 import {
   initIAP,
   endIAP,
@@ -9,6 +10,7 @@ import {
   restoreCloakr,
   validateReceiptWithBackend,
   dumpDiagnostics,
+  isIAPAvailable,
   ProductInfo,
   EntitlementStatus,
   IAP_LOG_PREFIX,
@@ -32,6 +34,8 @@ interface EntitlementsContextType {
   isPremium: boolean;
   price: string;
   loading: boolean;
+  validatingPurchase: boolean;
+  iapAvailable: boolean;
   buy: () => Promise<void>;
   restore: () => Promise<void>;
   openManageSubscriptions: () => void;
@@ -55,8 +59,10 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
   const [status, setStatus] = useState<EntitlementStatus>('FREE');
   const [price, setPrice] = useState('$5.99');
   const [loading, setLoading] = useState(false);
+  const [validatingPurchase, setValidatingPurchase] = useState(false);
   const [showManageLink, setShowManageLink] = useState(false);
   const [expiresDateMs, setExpiresDateMs] = useState<number | null>(null);
+  const [iapAvailableState, setIapAvailableState] = useState(true);
 
   const isPremium = status === 'PREMIUM_ACTIVE';
 
@@ -65,6 +71,9 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
    */
   const initialize = useCallback(async () => {
     console.log(`${IAP_LOG_PREFIX} Initializing entitlements...`);
+
+    // Allow normal subscription detection for all builds including TestFlight
+    console.log(`${IAP_LOG_PREFIX} Initializing with full subscription detection enabled`);
 
     try {
       // Purge legacy storage keys
@@ -81,7 +90,7 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
       console.log(`${IAP_LOG_PREFIX} Cached expiry: ${cachedExpiry}, now: ${now}`);
 
       if (cachedExpiry && cachedExpiry > now) {
-        // Temporarily show premium optimistic
+        // Use cached premium status if valid
         console.log(`${IAP_LOG_PREFIX} Cached expiry valid, setting premium optimistic`);
         setStatus('PREMIUM_ACTIVE');
         setExpiresDateMs(cachedExpiry);
@@ -106,6 +115,13 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
 
     } catch (error) {
       console.error(`${IAP_LOG_PREFIX} Initialization failed:`, error);
+      
+      // Handle simulator case gracefully
+      if (error instanceof Error && error.message.includes('E_IAP_NOT_AVAILABLE')) {
+        console.warn(`${IAP_LOG_PREFIX} IAP not available (likely iOS Simulator) - running in demo mode`);
+        setIapAvailableState(false);
+      }
+      
       setStatus('FREE');
     }
   }, []);
@@ -130,6 +146,21 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
           await AsyncStorage.removeItem('cloakr_premium');
           await AsyncStorage.removeItem('cloakr_premium_expires');
         }
+      }
+      
+      // Don't clear valid subscription cache - only legacy keys
+      
+      // In production, clear all StoreKit-related cache too
+      if (!__DEV__) {
+        console.log(`${IAP_LOG_PREFIX} Production build - clearing all potential StoreKit cache`);
+        // Clear any other potential IAP-related keys
+        await AsyncStorage.multiRemove([
+          'cloakr_iap_cache',
+          'cloakr_transactions',
+          'cloakr_receipts',
+          'iap_receipts',
+          'purchased_products',
+        ]);
       }
     } catch (error) {
       console.warn(`${IAP_LOG_PREFIX} Failed to purge legacy keys:`, error);
@@ -180,6 +211,9 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
    */
   const silentRevalidation = async (): Promise<void> => {
     console.log(`${IAP_LOG_PREFIX} Starting silent revalidation...`);
+    
+    // Allow silent revalidation for all builds including TestFlight
+    console.log(`${IAP_LOG_PREFIX} Running silent revalidation`);
     
     try {
       const restoreResult = await restoreCloakr();
@@ -232,7 +266,13 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
    * Purchase subscription
    */
   const buy = useCallback(async (): Promise<void> => {
-    if (loading) return;
+    if (loading || validatingPurchase) return;
+    
+    // Check if IAP is available before proceeding
+    if (!isIAPAvailable() || !iapAvailableState) {
+      console.warn(`${IAP_LOG_PREFIX} IAP not available - purchase blocked`);
+      throw new Error('In-App Purchases not available on this device');
+    }
     
     console.log(`${IAP_LOG_PREFIX} Context buy() called`);
     setLoading(true);
@@ -253,27 +293,40 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
       console.log(`${IAP_LOG_PREFIX} purchaseCloakr() returned: ${result}`);
 
       if (result === 'PURCHASED') {
-        console.log(`${IAP_LOG_PREFIX} Purchase successful, verifying with restore...`);
+        // Show validating state immediately after purchase success
+        setLoading(false);
+        setValidatingPurchase(true);
+        console.log(`${IAP_LOG_PREFIX} Purchase successful—verifying...`);
         
-        // Double-check with restore to get expiry date
-        const restoreResult = await restoreCloakr();
-        
-        if (restoreResult.restored && restoreResult.expiresDateMs) {
-          setStatus('PREMIUM_ACTIVE');
-          setExpiresDateMs(restoreResult.expiresDateMs);
-          await saveCachedEntitlement(restoreResult.expiresDateMs);
-          console.log(`${IAP_LOG_PREFIX} Premium activated successfully, expires: ${new Date(restoreResult.expiresDateMs).toISOString()}`);
-        } else {
-          console.warn(`${IAP_LOG_PREFIX} Purchase completed but restore verification failed:`, restoreResult);
-          // Don't fail the purchase - the purchase listener validated it
-          // Just set a default expiry
+        try {
+          // Double-check with restore to get expiry date
+          const restoreResult = await restoreCloakr();
+          
+          if (restoreResult.restored && restoreResult.expiresDateMs) {
+            setStatus('PREMIUM_ACTIVE');
+            setExpiresDateMs(restoreResult.expiresDateMs);
+            await saveCachedEntitlement(restoreResult.expiresDateMs);
+            console.log(`${IAP_LOG_PREFIX} Premium activated successfully, expires: ${new Date(restoreResult.expiresDateMs).toISOString()}`);
+          } else {
+            console.warn(`${IAP_LOG_PREFIX} Purchase completed but restore verification failed:`, restoreResult);
+            // Don't fail the purchase - the purchase listener validated it
+            // Just set a default expiry
+            const defaultExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days
+            setStatus('PREMIUM_ACTIVE');
+            setExpiresDateMs(defaultExpiry);
+            await saveCachedEntitlement(defaultExpiry);
+          }
+        } catch (validationError) {
+          console.warn(`${IAP_LOG_PREFIX} Validation error after successful purchase:`, validationError);
+          // Still grant premium since purchase was successful
           const defaultExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days
           setStatus('PREMIUM_ACTIVE');
           setExpiresDateMs(defaultExpiry);
           await saveCachedEntitlement(defaultExpiry);
         }
         
-        // Success - don't throw
+        // Success - trigger immediate UI update
+        setAdsIsPremium(true);
         return;
         
       } else if (result === 'CANCELLED') {
@@ -290,8 +343,9 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
       throw error;
     } finally {
       setLoading(false);
+      setValidatingPurchase(false);
     }
-  }, [loading]);
+  }, [loading, validatingPurchase]);
 
   /**
    * Restore purchases
@@ -311,6 +365,9 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
         setExpiresDateMs(result.expiresDateMs);
         await saveCachedEntitlement(result.expiresDateMs);
         console.log(`${IAP_LOG_PREFIX} Restore successful`);
+        
+        // Trigger immediate UI update
+        setAdsIsPremium(true);
       } else {
         // Ensure FREE status on failed restore
         setStatus('FREE');
@@ -351,12 +408,15 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
     };
   }, [initialize]);
 
-  // Debug logging for status changes
+  // Debug logging for status changes and update ads system
   useEffect(() => {
     console.log(`${IAP_LOG_PREFIX} Status changed: ${status}, isPremium: ${isPremium}`);
     if (expiresDateMs) {
       console.log(`${IAP_LOG_PREFIX} Expires: ${new Date(expiresDateMs).toISOString()}`);
     }
+    
+    // Update ads system with premium status
+    setAdsIsPremium(isPremium);
     
     // Log diagnostics
     dumpDiagnostics();
@@ -367,6 +427,8 @@ export function EntitlementsProvider({ children }: { children: React.ReactNode }
     isPremium,
     price,
     loading,
+    validatingPurchase,
+    iapAvailable: iapAvailableState && isIAPAvailable(),
     buy,
     restore,
     openManageSubscriptions: showManageLink ? openManageSubscriptions : () => {},

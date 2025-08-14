@@ -2,6 +2,7 @@
 /**
  * Simple Express server for Cloakr receipt validation
  */
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { setupReceiptValidationEndpoint } = require('./receiptValidation_v2');
